@@ -8,7 +8,7 @@ import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import streamlit as st
 from docx import Document
@@ -181,7 +181,7 @@ class TableTheme:
     )
     outer_border_color: str = "0F4761"
     outer_border_pt: float = 1.0
-    inner_border_color: str = "B8C8D0"
+    inner_border_color: str = "0F4761"
     inner_border_pt: float = 0.5
 
 
@@ -194,13 +194,13 @@ class FooterTheme:
     phone_symbol: str = "☎"
     email_symbol: str = "✉"
     contact_font: str = "Arial"
-    contact_size: float = 8.0
+    contact_size: float = 10.5
     phone_color: str = "BF4E14"
     email_color: str = "0F4761"
     contact_bold: bool = True
     page_fill: str = "BF4E14"
     page_text: TextStyle = field(
-        default_factory=lambda: TextStyle("Orbitron", 9.0, "FFFFFF", True, False)
+        default_factory=lambda: TextStyle("Orbitron", 10.5, "FFFFFF", True, False)
     )
     page_badge_size_pt: float = 24.0
 
@@ -245,10 +245,10 @@ def default_header_segments() -> list[HeaderSegment]:
 
 def default_footer_segments() -> list[HeaderSegment]:
     return [
-        HeaderSegment(1, "From", TextStyle("Arial", 9, "BF4E14", False)),
-        HeaderSegment(1, "Learners", TextStyle("Orbitron", 9, "0F4761", True)),
-        HeaderSegment(1, "to", TextStyle("Arial", 9, "BF4E14", False)),
-        HeaderSegment(1, "Explorers", TextStyle("Orbitron", 9, "0F4761", True)),
+        HeaderSegment(1, "From", TextStyle("Arial", 10.5, "BF4E14", False)),
+        HeaderSegment(1, "Learners", TextStyle("Orbitron", 10.5, "0F4761", True)),
+        HeaderSegment(1, "to", TextStyle("Arial", 10.5, "BF4E14", False)),
+        HeaderSegment(1, "Explorers", TextStyle("Orbitron", 10.5, "0F4761", True)),
     ]
 
 
@@ -503,6 +503,14 @@ def _set_cell_shading(cell, fill: str) -> None:
     shd.set(qn("w:fill"), _hex(fill, "FFFFFF"))
 
 
+def _clear_cell_shading(cell) -> None:
+    """Remove explicit cell fill so header-layer watermark can remain visible behind body rows."""
+    tcpr = cell._tc.get_or_add_tcPr()
+    shd = tcpr.find(qn("w:shd"))
+    if shd is not None:
+        tcpr.remove(shd)
+
+
 def _set_table_borders(table, theme: TableTheme) -> None:
     tblpr = table._tbl.tblPr
     borders = tblpr.find(qn("w:tblBorders"))
@@ -553,11 +561,11 @@ def _set_cell_text_preserve_geometry(
 def _style_header_row(row, table_theme: TableTheme) -> None:
     labels = ["No.", "Word", "Type", "Pronunciation", "Meaning"]
     for i, (cell, label) in enumerate(zip(row.cells, labels)):
-        _set_cell_shading(cell, table_theme.no_fill if i == 0 else table_theme.header_fill)
+        _set_cell_shading(cell, table_theme.header_fill)
         _set_cell_no_wrap(cell, True)
         _set_cell_text_preserve_geometry(
             cell, label,
-            style=table_theme.no_header_text if i == 0 else table_theme.header_text,
+            style=table_theme.header_text,
             center=True,
         )
 
@@ -590,9 +598,13 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             _set_cant_split(row)
             for cell_index, c in enumerate(row.cells):
                 _clear_vmerge(c)
-                _set_cell_shading(c, table_theme.no_fill if cell_index == 0 else "FFFFFF")
+                if cell_index == 0:
+                    _set_cell_shading(c, table_theme.no_fill)
+                else:
+                    # Transparent body cells: do not cover the watermark sitting in the header layer.
+                    _clear_cell_shading(c)
 
-            # No. column is a branded orange rail; vocabulary text remains neutral/plain.
+            # No. body column remains the branded orange rail; the header cell "No." is navy.
             _set_cell_text_preserve_geometry(
                 row.cells[0], family.number if word_index == 0 else "",
                 style=table_theme.no_body_text, center=True,
@@ -675,42 +687,91 @@ def _append_page_field_run(parent, style: TextStyle, *, cached_text: str | None 
     parent.append(rr)
 
 
+def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) -> None:
+    """Add a DrawingML gradient badge with a PAGE field inside its textbox."""
+    size_pt = max(18.0, min(40.0, float(footer_theme.page_badge_size_pt)))
+    size_emu = int(round(size_pt * 12700))
+    y_offset = -int(round(size_emu * 0.48))
+    base = _hex(footer_theme.page_fill, "BF4E14")
+    style = footer_theme.page_text
+    font = style.font
+    color = _hex(style.color, "FFFFFF")
+    hp = max(12, int(round(float(style.size) * 2)))
+    bold_xml = "<w:b/><w:bCs/>" if style.bold else ""
+    italic_xml = "<w:i/><w:iCs/>" if style.italic else ""
+    rpr = f"""<w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:eastAsia="{font}" w:cs="{font}"/>{bold_xml}{italic_xml}<w:color w:val="{color}"/><w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/></w:rPr>"""
+    field_runs = f"""
+      <w:r>{rpr}<w:fldChar w:fldCharType="begin"/></w:r>
+      <w:r>{rpr}<w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>
+      <w:r>{rpr}<w:fldChar w:fldCharType="separate"/></w:r>
+      <w:r>{rpr}<w:t>1</w:t></w:r>
+      <w:r>{rpr}<w:fldChar w:fldCharType="end"/></w:r>"""
+    xml = f"""
+    <w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+        xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+      <wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0"
+          relativeHeight="251680768" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+        <wp:simplePos x="0" y="0"/>
+        <wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH>
+        <wp:positionV relativeFrom="paragraph"><wp:posOffset>{y_offset}</wp:posOffset></wp:positionV>
+        <wp:extent cx="{size_emu}" cy="{size_emu}"/>
+        <wp:effectExtent l="0" t="0" r="0" b="0"/>
+        <wp:wrapNone/>
+        <wp:docPr id="910041" name="LX Gradient Page Badge"/>
+        <wp:cNvGraphicFramePr/>
+        <a:graphic>
+          <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <wps:wsp>
+              <wps:cNvSpPr/>
+              <wps:spPr>
+                <a:xfrm><a:off x="0" y="0"/><a:ext cx="{size_emu}" cy="{size_emu}"/></a:xfrm>
+                <a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>
+                <a:gradFill flip="none" rotWithShape="1">
+                  <a:gsLst>
+                    <a:gs pos="0"><a:srgbClr val="{base}"><a:shade val="30000"/><a:satMod val="115000"/><a:lumMod val="90000"/></a:srgbClr></a:gs>
+                    <a:gs pos="50000"><a:srgbClr val="{base}"><a:lumMod val="75000"/><a:shade val="67500"/><a:satMod val="115000"/><a:alpha val="74000"/></a:srgbClr></a:gs>
+                    <a:gs pos="100000"><a:srgbClr val="{base}"><a:lumMod val="75000"/><a:shade val="100000"/><a:satMod val="115000"/><a:alpha val="46000"/></a:srgbClr></a:gs>
+                  </a:gsLst>
+                  <a:lin ang="2700000" scaled="1"/><a:tileRect/>
+                </a:gradFill>
+                <a:ln><a:noFill/></a:ln>
+              </wps:spPr>
+              <wps:style>
+                <a:lnRef idx="2"><a:schemeClr val="accent1"><a:shade val="15000"/></a:schemeClr></a:lnRef>
+                <a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef>
+                <a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef>
+                <a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef>
+              </wps:style>
+              <wps:txbx>
+                <w:txbxContent>
+                  <w:p>
+                    <w:pPr><w:spacing w:before="0" w:after="0"/><w:jc w:val="center"/></w:pPr>
+                    {field_runs}
+                  </w:p>
+                </w:txbxContent>
+              </wps:txbx>
+              <wps:bodyPr rot="0" spcFirstLastPara="0" vertOverflow="overflow" horzOverflow="overflow"
+                  vert="horz" wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" numCol="1"
+                  spcCol="0" rtlCol="0" fromWordArt="0" anchor="ctr" anchorCtr="1" forceAA="0" compatLnSpc="1">
+                <a:prstTxWarp prst="textNoShape"><a:avLst/></a:prstTxWarp><a:noAutofit/>
+              </wps:bodyPr>
+            </wps:wsp>
+          </a:graphicData>
+        </a:graphic>
+      </wp:anchor>
+    </w:drawing>"""
+    run = paragraph.add_run()
+    run._r.append(etree.fromstring(xml.encode("utf-8")))
+
+
 def _add_page_badge(paragraph, footer_theme: FooterTheme) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     paragraph.paragraph_format.space_before = Pt(0)
     paragraph.paragraph_format.space_after = Pt(0)
-    run = paragraph.add_run()
-    pict = OxmlElement("w:pict")
-    oval = etree.Element("{urn:schemas-microsoft-com:vml}oval")
-    size = max(18.0, min(40.0, float(footer_theme.page_badge_size_pt)))
-    oval.set("style", f"width:{size}pt;height:{size}pt")
-    oval.set("fillcolor", f"#{_hex(footer_theme.page_fill, 'BF4E14')}")
-    oval.set("stroked", "f")
-    textbox = etree.Element("{urn:schemas-microsoft-com:vml}textbox")
-    textbox.set("inset", "0,0,0,0")
-    txc = OxmlElement("w:txbxContent")
-    p = OxmlElement("w:p")
-    ppr = OxmlElement("w:pPr")
-    jc = OxmlElement("w:jc")
-    jc.set(qn("w:val"), "center")
-    ppr.append(jc)
-    spacing = OxmlElement("w:spacing")
-    spacing.set(qn("w:before"), "0")
-    spacing.set(qn("w:after"), "0")
-    spacing.set(qn("w:line"), str(int(max(10.0, footer_theme.page_text.size * 1.35) * 20)))
-    spacing.set(qn("w:lineRule"), "auto")
-    ppr.append(spacing)
-    p.append(ppr)
-    _append_page_field_run(p, footer_theme.page_text, field_type="begin")
-    _append_page_field_run(p, footer_theme.page_text, instruction=" PAGE ")
-    _append_page_field_run(p, footer_theme.page_text, field_type="separate")
-    _append_page_field_run(p, footer_theme.page_text, cached_text="1")
-    _append_page_field_run(p, footer_theme.page_text, field_type="end")
-    txc.append(p)
-    textbox.append(txc)
-    oval.append(textbox)
-    pict.append(oval)
-    run._r.append(pict)
+    paragraph.paragraph_format.line_spacing = Pt(max(18.0, float(footer_theme.page_badge_size_pt)))
+    _add_gradient_page_badge_background(paragraph, footer_theme)
 
 
 def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
@@ -932,10 +993,10 @@ def run_content_and_brand_qa(path: str | Path, expected: VocabDocument) -> QARes
     else:
         problems.append("Không phát hiện cấu trúc logo/watermark ở header.")
 
-    if "PAGE" in footer_xml and "txbxContent" in footer_xml:
-        checks.append("Footer + centered PAGE badge structure OK.")
+    if "PAGE" in footer_xml and "gradFill" in footer_xml:
+        checks.append("Footer gradient badge + PAGE field structure OK.")
     else:
-        problems.append("Footer mất PAGE field hoặc page badge structure.")
+        problems.append("Footer mất PAGE field hoặc gradient page badge structure.")
 
     return QAResult(ok=not problems, checks=checks, problems=problems)
 
@@ -1098,8 +1159,8 @@ st.markdown(
     .lx-chip {display:inline-block; padding:.25rem .55rem; border-radius:999px;
               background:#eef4f7; margin-right:.35rem; font-size:.85rem;}
     </style>
-    <div class="lx-title">LingualXplore · VOCAB Builder V4</div>
-    <div class="lx-sub">Tạo mới hoặc chuyển DOCX cũ → theme mới · Header/Footer linh hoạt · bảng liền mạch.</div>
+    <div class="lx-title">LingualXplore · VOCAB Builder V4.1</div>
+    <div class="lx-sub">Tạo mới · chuyển 1 file hoặc hàng loạt DOCX cũ → theme mới · Header/Footer linh hoạt · bảng liền mạch.</div>
     """,
     unsafe_allow_html=True,
 )
@@ -1109,12 +1170,12 @@ with st.sidebar:
     st.markdown("### 1 · Nguồn dữ liệu")
     source_mode = st.radio(
         "Chọn cách nhập",
-        ["Dán CSV / Clipboard", "Chuyển file Word cũ"],
+        ["Dán CSV / Clipboard", "Chuyển 1 file Word cũ", "Chuyển hàng loạt Word cũ"],
         key="source_mode",
         label_visibility="collapsed",
     )
     uploaded_old = None
-    if source_mode == "Chuyển file Word cũ":
+    if source_mode == "Chuyển 1 file Word cũ":
         uploaded_old = st.file_uploader("Upload DOCX phiên bản cũ", type=["docx"])
         if uploaded_old is not None:
             payload = uploaded_old.getvalue()
@@ -1134,6 +1195,18 @@ with st.sidebar:
                 except Exception as exc:
                     st.session_state["_import_error"] = str(exc)
 
+    uploaded_batch = []
+    if source_mode == "Chuyển hàng loạt Word cũ":
+        uploaded_batch = st.file_uploader(
+            "Upload nhiều DOCX phiên bản cũ",
+            type=["docx"],
+            accept_multiple_files=True,
+            help="Chọn nhiều file cùng lúc. V4.1 tự đọc metadata/bảng của từng file và xuất một ZIP.",
+        ) or []
+        if uploaded_batch:
+            st.success(f"Đã chọn {len(uploaded_batch)} file")
+            st.caption("Metadata UNIT/MODULE, số bài và title sẽ được đọc riêng từ từng file.")
+
     st.markdown("### 2 · Thông tin tài liệu")
     st.selectbox("MODULE / UNIT", ["UNIT", "MODULE"], key="section_label")
     st.text_input("Sub-unit / badge", key="unit", help="Ví dụ 5.1 – hiển thị trong ô cam bên trái.")
@@ -1141,12 +1214,14 @@ with st.sidebar:
     st.text_input("Document type", key="document_type")
     st.text_input("Title", key="title")
     st.text_input("Tên file tải về", key="filename")
+    if source_mode == "Chuyển hàng loạt Word cũ":
+        st.caption("Các ô metadata phía trên chỉ dùng cho chế độ tạo mới / 1 file. Batch sẽ dùng metadata của từng DOCX.")
 
-    if st.session_state.get("_import_notes") and source_mode == "Chuyển file Word cũ":
+    if st.session_state.get("_import_notes") and source_mode == "Chuyển 1 file Word cũ":
         st.success("Đã đọc file cũ")
         for note in st.session_state["_import_notes"]:
             st.caption("• " + note)
-    if st.session_state.get("_import_error") and source_mode == "Chuyển file Word cũ":
+    if st.session_state.get("_import_error") and source_mode == "Chuyển 1 file Word cũ":
         st.error(st.session_state["_import_error"])
 
 # -------------------- TABS --------------------
@@ -1156,30 +1231,42 @@ tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
 
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
-    if source_mode == "Chuyển file Word cũ":
-        st.info("File cũ đã được chuyển về dữ liệu 5 cột bên dưới. Bạn có thể sửa trực tiếp trước khi xuất.")
+    if source_mode == "Chuyển hàng loạt Word cũ":
+        st.info("Batch mode: app sẽ đọc từng DOCX, lấy metadata + bảng vocabulary, rồi đóng gói toàn bộ file mới vào một ZIP.")
+        if uploaded_batch:
+            st.dataframe(
+                {"File đã chọn": [f.name for f in uploaded_batch]},
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.warning("Hãy chọn các file DOCX ở sidebar.")
+        raw_data = st.session_state.raw_data
     else:
-        st.info("Dán CSV 5 cột: No., Word, Type, Pronunciation, Meaning. No. trống = cùng word family.")
-    raw_data = st.text_area(
-        "CSV / Clipboard",
-        height=430,
-        key="raw_data",
-        placeholder='No.,Word,Type,Pronunciation,Meaning\n1,special,"adj, n",,\n,specially,adv,,',
-    )
-    try:
-        preview_doc = parse_vocab_csv(
-            raw_data,
-            unit=st.session_state.unit,
-            heading_unit=st.session_state.heading_unit,
-            title=st.session_state.title,
-            document_type=st.session_state.document_type,
-            section_label=st.session_state.section_label,
+        if source_mode == "Chuyển 1 file Word cũ":
+            st.info("File cũ đã được chuyển về dữ liệu 5 cột bên dưới. Bạn có thể sửa trực tiếp trước khi xuất.")
+        else:
+            st.info("Dán CSV 5 cột: No., Word, Type, Pronunciation, Meaning. No. trống = cùng word family.")
+        raw_data = st.text_area(
+            "CSV / Clipboard",
+            height=430,
+            key="raw_data",
+            placeholder='No.,Word,Type,Pronunciation,Meaning\n1,special,"adj, n",,\n,specially,adv,,',
         )
-        c1, c2 = st.columns(2)
-        c1.metric("Word families", preview_doc.family_count)
-        c2.metric("Vocabulary rows", preview_doc.word_count)
-    except Exception:
-        pass
+        try:
+            preview_doc = parse_vocab_csv(
+                raw_data,
+                unit=st.session_state.unit,
+                heading_unit=st.session_state.heading_unit,
+                title=st.session_state.title,
+                document_type=st.session_state.document_type,
+                section_label=st.session_state.section_label,
+            )
+            c1, c2 = st.columns(2)
+            c1.metric("Word families", preview_doc.family_count)
+            c2.metric("Vocabulary rows", preview_doc.word_count)
+        except Exception:
+            pass
 
 # -------------------- HEADER + TITLE --------------------
 HEADER_DEFAULTS = [
@@ -1265,14 +1352,14 @@ with tab_table:
     with c1:
         with st.container(border=True):
             st.markdown("**Cột No.**")
-            table_no_fill = st.color_picker("Màu nền cột No.", "#BF4E14")
+            table_no_fill = st.color_picker("Màu nền STT (body)", "#BF4E14", help="Chỉ phần STT trong thân bảng. Ô header No. dùng màu xanh giống toàn header row.")
             no_font = font_select("Font STT", "Orbitron", key="no_font")
             no_size = st.number_input("Size STT", 7.0, 16.0, 10.0, 0.5)
             no_color = st.color_picker("Màu STT", "#FFFFFF")
             no_bold = st.checkbox("Bold STT", True)
     with c2:
         with st.container(border=True):
-            st.markdown("**Header 4 cột còn lại**")
+            st.markdown("**Header row (cả No.)**")
             table_header_fill = st.color_picker("Màu nền", "#0F4761")
             table_header_font = font_select("Font header", "Arial", key="table_header_font")
             table_header_size = st.number_input("Size header", 8.0, 18.0, 10.5, 0.5)
@@ -1284,17 +1371,16 @@ with tab_table:
             body_font = font_select("Font body", "Times New Roman", key="body_font")
             body_size = st.number_input("Size body", 9.0, 16.0, 12.0, 0.5)
             body_color = st.color_picker("Màu body", "#000000")
-            outer_border_color = st.color_picker("Outer border", "#0F4761")
-            inner_border_color = st.color_picker("Inner grid", "#B8C8D0")
+            table_line_color = st.color_picker("Màu tất cả đường kẻ", "#0F4761")
             outer_border_pt = st.number_input("Outer border (pt)", 0.25, 2.0, 1.0, 0.25)
             inner_border_pt = st.number_input("Inner grid (pt)", 0.25, 1.5, 0.5, 0.25)
 
 # -------------------- FOOTER --------------------
 FOOTER_DEFAULTS = [
-    ("From", "Arial", 9.0, "#BF4E14", False, False),
-    ("Learners", "Orbitron", 9.0, "#0F4761", True, False),
-    ("to", "Arial", 9.0, "#BF4E14", False, False),
-    ("Explorers", "Orbitron", 9.0, "#0F4761", True, False),
+    ("From", "Arial", 10.5, "#BF4E14", False, False),
+    ("Learners", "Orbitron", 10.5, "#0F4761", True, False),
+    ("to", "Arial", 10.5, "#BF4E14", False, False),
+    ("Explorers", "Orbitron", 10.5, "#0F4761", True, False),
 ]
 
 with tab_footer:
@@ -1308,7 +1394,7 @@ with tab_footer:
             footer_seg_count = st.slider("Số segment slogan", 1, 8, 4)
             footer_segments_values = []
             for i in range(footer_seg_count):
-                d = FOOTER_DEFAULTS[i] if i < len(FOOTER_DEFAULTS) else ("", "Arial", 9.0, "#0F4761", False, False)
+                d = FOOTER_DEFAULTS[i] if i < len(FOOTER_DEFAULTS) else ("", "Arial", 10.5, "#0F4761", False, False)
                 text_d, font_d, size_d, color_d, bold_d, italic_d = d
                 st.markdown(f"Segment {i+1}")
                 cc1, cc2 = st.columns([1.1, 1])
@@ -1330,11 +1416,11 @@ with tab_footer:
             st.markdown("**Số trang**")
             page_fill = st.color_picker("Màu hình tròn", "#BF4E14")
             page_font = font_select("Font số trang", "Orbitron", key="page_font")
-            page_size = st.number_input("Size số trang", 7.0, 16.0, 9.0, 0.5)
+            page_size = st.number_input("Size số trang", 7.0, 16.0, 10.5, 0.5)
             page_color = st.color_picker("Màu số", "#FFFFFF")
             page_bold = st.checkbox("Bold số trang", True)
             page_badge_size = st.slider("Đường kính (pt)", 18, 36, 24)
-            st.caption("V4 đặt PAGE field ngay trong hình tròn nên số luôn nằm chính giữa.")
+            st.caption("V4.1 dùng gradient DrawingML như bản đẹp; PAGE field nằm chính giữa phía trên gradient.")
 
     with right_col:
         with st.container(border=True):
@@ -1344,7 +1430,7 @@ with tab_footer:
             email_symbol = st.selectbox("Ký hiệu email", ["✉", "@", "•"], index=0)
             email = st.text_input("Email", "email@yourcenter.com")
             contact_font = font_select("Font contact", "Arial", key="contact_font")
-            contact_size = st.number_input("Size contact", 6.0, 14.0, 8.0, 0.5)
+            contact_size = st.number_input("Size contact", 6.0, 16.0, 10.5, 0.5)
             phone_color = st.color_picker("Màu SĐT", "#BF4E14")
             email_color = st.color_picker("Màu email", "#0F4761")
             contact_bold = st.checkbox("Bold contact", True)
@@ -1354,36 +1440,25 @@ with tab_export:
     st.markdown("### Kiểm tra & xuất file")
     st.markdown(
         '<span class="lx-chip">Montserrat heading</span>'
-        '<span class="lx-chip">Orange No. rail</span>'
+        '<span class="lx-chip">Navy header + blue grid</span>'
         '<span class="lx-chip">Orbitron numbering</span>'
-        '<span class="lx-chip">Editable footer</span>'
-        '<span class="lx-chip">Old DOCX converter</span>',
+        '<span class="lx-chip">Gradient page badge</span>'
+        '<span class="lx-chip">Single + batch DOCX converter</span>',
         unsafe_allow_html=True,
     )
-    run_qa = st.checkbox("Chạy Content + Brand QA", value=True)
-    generate = st.button("TẠO FILE WORD", type="primary", use_container_width=True)
+
+    is_batch = source_mode == "Chuyển hàng loạt Word cũ"
+    run_qa = st.checkbox(
+        "Chạy QA cho từng file" if is_batch else "Chạy Content + Brand QA",
+        value=False if is_batch else True,
+        help="Batch QA sẽ chậm hơn vì app phải đọc lại từng DOCX vừa sinh." if is_batch else None,
+    )
+    button_label = "TẠO ZIP HÀNG LOẠT" if is_batch else "TẠO FILE WORD"
+    generate = st.button(button_label, type="primary", use_container_width=True)
 
     if generate:
         if not TEMPLATE_PATH.exists():
             st.error(f"Không tìm thấy template: {TEMPLATE_PATH}")
-            st.stop()
-
-        filename = st.session_state.filename.strip() or "VOCAB_BUILDER.docx"
-        if not filename.lower().endswith(".docx"):
-            filename += ".docx"
-
-        document = parse_vocab_csv(
-            st.session_state.raw_data,
-            unit=st.session_state.unit,
-            heading_unit=st.session_state.heading_unit,
-            title=st.session_state.title,
-            document_type=st.session_state.document_type,
-            section_label=st.session_state.section_label,
-        )
-        messages = validate_vocab(document)
-        for message in messages:
-            (st.error if message.level == "error" else st.warning)(message.message)
-        if has_errors(messages):
             st.stop()
 
         header_segments = [
@@ -1417,9 +1492,9 @@ with tab_export:
                 header_text=TextStyle(table_header_font, table_header_size, table_header_color.lstrip("#"), table_header_bold),
                 no_body_text=TextStyle(no_font, no_size, no_color.lstrip("#"), no_bold),
                 body_text=TextStyle(body_font, body_size, body_color.lstrip("#"), False, False),
-                outer_border_color=outer_border_color.lstrip("#"),
+                outer_border_color=table_line_color.lstrip("#"),
                 outer_border_pt=outer_border_pt,
-                inner_border_color=inner_border_color.lstrip("#"),
+                inner_border_color=table_line_color.lstrip("#"),
                 inner_border_pt=inner_border_pt,
             ),
             footer=FooterTheme(
@@ -1440,36 +1515,143 @@ with tab_export:
             ),
         )
 
-        st.write(f"Đã nhận **{document.family_count} word families / {document.word_count} từ**.")
-        try:
-            output = render_vocab_docx(document, template_path=TEMPLATE_PATH, theme=theme)
-        except Exception as exc:
-            st.exception(exc)
-            st.stop()
+        if is_batch:
+            if not uploaded_batch:
+                st.error("Chưa có file DOCX nào. Hãy upload nhiều file ở sidebar trước.")
+                st.stop()
 
-        if run_qa:
-            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-                tmp.write(output.getvalue())
-                tmp_path = Path(tmp.name)
+            zip_buffer = io.BytesIO()
+            report_buffer = io.StringIO()
+            report_writer = csv.writer(report_buffer, lineterminator="\n")
+            report_writer.writerow(["source_file", "status", "unit", "title", "families", "rows", "output_file", "message"])
+            success_count = 0
+            failed_count = 0
+            used_names: set[str] = set()
+
+            with ZipFile(zip_buffer, "w", compression=ZIP_DEFLATED) as batch_zip:
+                progress = st.progress(0, text="Đang chuyển hàng loạt...")
+                for index, uploaded in enumerate(uploaded_batch, start=1):
+                    source_name = uploaded.name
+                    try:
+                        meta, csv_text, notes = extract_old_vocab_docx(uploaded.getvalue())
+                        converted = parse_vocab_csv(
+                            csv_text,
+                            unit=meta.get("unit", ""),
+                            heading_unit=meta.get("heading_unit", ""),
+                            title=meta.get("title", ""),
+                            document_type=meta.get("document_type", "VOCAB BUILDER"),
+                            section_label=meta.get("section_label", "UNIT"),
+                        )
+                        messages = validate_vocab(converted)
+                        errors = [m.message for m in messages if m.level == "error"]
+                        if errors:
+                            raise ValueError("; ".join(errors))
+
+                        output = render_vocab_docx(converted, template_path=TEMPLATE_PATH, theme=theme)
+                        stem = re.sub(r"[^A-Za-z0-9._() -]+", "_", Path(source_name).stem).strip() or "converted"
+                        out_name = f"{stem} - NEW THEME.docx"
+                        counter = 2
+                        while out_name.casefold() in used_names:
+                            out_name = f"{stem} - NEW THEME ({counter}).docx"
+                            counter += 1
+                        used_names.add(out_name.casefold())
+
+                        qa_note = ""
+                        if run_qa:
+                            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+                                tmp.write(output.getvalue())
+                                tmp_path = Path(tmp.name)
+                            try:
+                                result = run_content_and_brand_qa(tmp_path, converted)
+                                if not result.ok:
+                                    qa_note = "QA warning: " + " | ".join(result.problems[:3])
+                            finally:
+                                tmp_path.unlink(missing_ok=True)
+
+                        batch_zip.writestr(out_name, output.getvalue())
+                        success_count += 1
+                        report_writer.writerow([
+                            source_name, "OK", converted.unit, converted.title,
+                            converted.family_count, converted.word_count, out_name,
+                            qa_note or " | ".join(notes[-1:]),
+                        ])
+                    except Exception as exc:
+                        failed_count += 1
+                        report_writer.writerow([source_name, "FAILED", "", "", "", "", "", str(exc)])
+
+                    progress.progress(index / len(uploaded_batch), text=f"Đã xử lý {index}/{len(uploaded_batch)} file")
+
+                batch_zip.writestr("_CONVERSION_REPORT.csv", report_buffer.getvalue().encode("utf-8-sig"))
+
+            zip_buffer.seek(0)
+            progress.empty()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Đã chọn", len(uploaded_batch))
+            c2.metric("Thành công", success_count)
+            c3.metric("Lỗi", failed_count)
+            if failed_count:
+                st.warning("Một số file không chuyển được. Xem _CONVERSION_REPORT.csv trong ZIP để biết file và lỗi cụ thể.")
+            else:
+                st.success("Chuyển hàng loạt hoàn tất.")
+
+            st.download_button(
+                "TẢI ZIP FILE MỚI",
+                zip_buffer.getvalue(),
+                file_name="LingualXplore_Vocab_Builder_Batch_V4.1.zip",
+                mime="application/zip",
+                type="primary",
+                use_container_width=True,
+            )
+
+        else:
+            filename = st.session_state.filename.strip() or "VOCAB_BUILDER.docx"
+            if not filename.lower().endswith(".docx"):
+                filename += ".docx"
+
+            document = parse_vocab_csv(
+                st.session_state.raw_data,
+                unit=st.session_state.unit,
+                heading_unit=st.session_state.heading_unit,
+                title=st.session_state.title,
+                document_type=st.session_state.document_type,
+                section_label=st.session_state.section_label,
+            )
+            messages = validate_vocab(document)
+            for message in messages:
+                (st.error if message.level == "error" else st.warning)(message.message)
+            if has_errors(messages):
+                st.stop()
+
+            st.write(f"Đã nhận **{document.family_count} word families / {document.word_count} từ**.")
             try:
-                result = run_content_and_brand_qa(tmp_path, document)
-                if result.ok:
-                    st.success("QA semantic + brand structure: PASS")
-                else:
-                    st.warning("QA có cảnh báo; hãy kiểm tra file Word trực quan.")
-                with st.expander("Chi tiết QA"):
-                    for item in result.checks:
-                        st.write("✅", item)
-                    for item in result.problems:
-                        st.write("❌", item)
-            finally:
-                tmp_path.unlink(missing_ok=True)
+                output = render_vocab_docx(document, template_path=TEMPLATE_PATH, theme=theme)
+            except Exception as exc:
+                st.exception(exc)
+                st.stop()
 
-        st.download_button(
-            "TẢI FILE WORD",
-            output.getvalue(),
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            type="primary",
-            use_container_width=True,
-        )
+            if run_qa:
+                with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+                    tmp.write(output.getvalue())
+                    tmp_path = Path(tmp.name)
+                try:
+                    result = run_content_and_brand_qa(tmp_path, document)
+                    if result.ok:
+                        st.success("QA semantic + brand structure: PASS")
+                    else:
+                        st.warning("QA có cảnh báo; hãy kiểm tra file Word trực quan.")
+                    with st.expander("Chi tiết QA"):
+                        for item in result.checks:
+                            st.write("✅", item)
+                        for item in result.problems:
+                            st.write("❌", item)
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+
+            st.download_button(
+                "TẢI FILE WORD",
+                output.getvalue(),
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                type="primary",
+                use_container_width=True,
+            )
