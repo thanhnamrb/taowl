@@ -1826,6 +1826,23 @@ with tab_title:
                 italic = st.checkbox("I", italic_d, key=f"h_italic_{i}")
             header_values.append((line, text, font, size, color, bold, italic))
 
+    st.markdown("#### Xem nhanh Header đang chỉnh")
+    st.markdown(
+        _studio_page_html(
+            label=st.session_state["section_label"],
+            heading=st.session_state["heading_unit"] + ": " + st.session_state["title"].upper(),
+            document_type=st.session_state["document_type"],
+            badge=st.session_state["unit"],
+            h1=" ".join(t for ln, t, *_ in header_values if ln == 1),
+            h2=" ".join(t for ln, t, *_ in header_values if ln == 2),
+            slogan=st.session_state["studio_slogan"],
+            phone=st.session_state["studio_phone"],
+            email=st.session_state["studio_email"],
+            show_phone=st.session_state["studio_show_phone"],
+            show_email=st.session_state["studio_show_email"],
+        ), unsafe_allow_html=True,
+    )
+
 # -------------------- TABLE --------------------
 with tab_table:
     st.markdown("### Table theme")
@@ -1918,6 +1935,23 @@ with tab_footer:
             phone_color = st.color_picker("Màu SĐT", "#BF4E14")
             email_color = st.color_picker("Màu email", "#0F4761")
             contact_bold = st.checkbox("Bold contact", True)
+
+    st.markdown("#### Xem nhanh Footer đang chỉnh")
+    st.markdown(
+        _studio_page_html(
+            label=st.session_state["section_label"],
+            heading=st.session_state["heading_unit"] + ": " + st.session_state["title"].upper(),
+            document_type=st.session_state["document_type"],
+            badge=st.session_state["unit"],
+            h1=st.session_state["studio_header_line1"],
+            h2=st.session_state["studio_header_line2"],
+            slogan=" ".join(t for t, *_ in footer_segments_values if t.strip()),
+            phone=st.session_state["studio_phone"],
+            email=st.session_state["studio_email"],
+            show_phone=st.session_state["studio_show_phone"],
+            show_email=st.session_state["studio_show_email"],
+        ), unsafe_allow_html=True,
+    )
 
 # -------------------- EXPORT --------------------
 with tab_export:
