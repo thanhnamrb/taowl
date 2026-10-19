@@ -364,7 +364,7 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
             raise ValueError("Tiêu đề quá dài để hiển thị trong template gốc.")
         _, left, right = best
         two_line_size = min(base_size, safe_width_pt / max(width_units(left), width_units(right), 1.0))
-        if two_line_size < 17.5:
+        if two_line_size < 15.0:
             raise ValueError(
                 "Tiêu đề quá dài cho vùng title gốc. Hãy rút ngắn để tránh tràn chữ."
             )
