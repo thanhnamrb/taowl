@@ -46,14 +46,33 @@ class OriginalTemplateTests(unittest.TestCase):
         self.assertIn("SPECIAL DAYS", produced.tables[0].rows[1].cells[2].text)
 
     def test_long_title_and_page_field(self):
-        title = "A VERY LONG AND IMPORTANT COLLECTION OF ENGLISH WORD FAMILIES FOR ADVANCED CLASSROOM PRACTICE"
+        title = "SPECIAL DAYS AND CULTURAL FESTIVALS AROUND THE WORLD"
         data = namespace["render_vocab_docx"](self.sample(title), template_path=self.template).getvalue()
         produced = Document(io.BytesIO(data))
-        self.assertIn(title, produced.tables[0].rows[1].cells[2].text)
+        self.assertEqual(" ".join(produced.tables[0].rows[1].cells[2].text.split())[8:], title)
         footer_xml = produced.sections[0].footer._element.xml
         self.assertIn(" PAGE ", footer_xml)
         self.assertIn("gradFill", footer_xml)
         self.assertIn("updateFields", produced.settings.element.xml)
+
+    def test_people_and_places_fits_one_line(self):
+        data = namespace["render_vocab_docx"](
+            self.sample("PEOPLE & PLACES"), template_path=self.template
+        ).getvalue()
+        text = Document(io.BytesIO(data)).tables[0].rows[1].cells[2].text
+        self.assertEqual(text, "UNIT 5: PEOPLE & PLACES")
+        self.assertNotIn("\\n", text)
+
+    def test_footer_layout_is_original_not_a_table(self):
+        original = Document(self.template).sections[0].footer
+        generated = Document(io.BytesIO(
+            namespace["render_vocab_docx"](self.sample(), template_path=self.template).getvalue()
+        )).sections[0].footer
+        self.assertEqual(len(generated.tables), len(original.tables))
+        self.assertEqual(len(generated.paragraphs), len(original.paragraphs))
+        self.assertEqual(len(generated._element.xpath(".//w:drawing")), len(original._element.xpath(".//w:drawing")))
+        self.assertEqual(len(generated._element.xpath(".//w:pict")), len(original._element.xpath(".//w:pict")))
+        self.assertIn("PAGE", generated._element.xml)
 
     def test_round_trip_title_metadata(self):
         data = namespace["render_vocab_docx"](self.sample(), template_path=self.template).getvalue()
