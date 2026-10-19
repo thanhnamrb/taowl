@@ -307,8 +307,12 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
     badge = title.rows[0].cells[0]
     badge.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     _set_cell_no_wrap(badge, False)
+    badge_style = deepcopy(theme.badge)
+    if len(document.unit_badge) > 3:
+        # The artwork's orange badge must remain one line for 10.1 / 11.10.
+        badge_style.size = min(badge_style.size, max(16.0, 88.0 / (len(document.unit_badge) * .90)))
     _set_single_run_paragraph(
-        badge.paragraphs[0], document.unit_badge, theme.badge,
+        badge.paragraphs[0], document.unit_badge, badge_style,
         align=WD_ALIGN_PARAGRAPH.CENTER,
     )
 
