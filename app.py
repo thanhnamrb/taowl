@@ -1380,6 +1380,12 @@ def _studio_page_html(*, label: str, heading: str, document_type: str, badge: st
         contact += '<div style="color:#cd885f">☎ ' + html_escape(phone) + '</div>'
     if show_email and email.strip():
         contact += '<div style="color:#7795a6">✉ ' + html_escape(email) + '</div>'
+    # Preview and DOCX now share the same deliberate line breaks.
+    preview_heading = fit_title(
+        label + " " + heading, cell_width_pt=5.138 * 72, preferred_size=27.0,
+    )
+    heading_lines_html = "<br>".join(html_escape(line) for line in preview_heading.lines)
+    scaled_heading_px = max(12.0, 19.0 * preview_heading.font_size / 27.0)
     return f"""
     <div style="background:white;border:1px solid #dde4e8;border-radius:14px;
                 box-shadow:0 12px 28px #16394e18;padding:22px;min-height:410px;
@@ -1399,8 +1405,8 @@ def _studio_page_html(*, label: str, heading: str, document_type: str, badge: st
                       font-size:30px;font-weight:800;border-radius:12px">{html_escape(badge)}</div>
           <div style="flex:1;min-width:0;padding:12px 8px 12px 4px">
              <div style="font-weight:800;color:#b64d1b;font-size:14px">{html_escape(document_type)}</div>
-             <div style="font-size:19px;font-weight:850;line-height:1.25;overflow-wrap:anywhere">
-                {html_escape(label+" "+heading)}
+             <div style="font-size:{scaled_heading_px:.1f}px;font-weight:850;line-height:1.25;overflow-wrap:normal">
+                {heading_lines_html}
              </div>
           </div>
        </div>
