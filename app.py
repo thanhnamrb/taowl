@@ -791,58 +791,67 @@ def _add_page_badge(paragraph, footer_theme: FooterTheme) -> None:
 
 
 def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
-    section = doc.sections[0]
-    footer = section.footer
-    _clear_footer(footer)
-    content_width = section.page_width - section.left_margin - section.right_margin
-    table = footer.add_table(rows=1, cols=3, width=content_width)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = False
-    # Balanced columns make the page badge mathematically centered in the text area.
-    center_w = Inches(0.78)
-    side_w = int((content_width - center_w) / 2)
-    widths = [side_w, center_w, side_w]
-    for i, width in enumerate(widths):
-        table.columns[i].width = width
-        table.cell(0, i).width = width
-    _set_table_no_borders(table)
+    """Edit original footer IN PLACE: preserve gradient art, tab stops and shapes.
 
-    left = table.cell(0, 0)
-    left.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    p = left.paragraphs[0]
-    p.alignment = _alignment(footer_theme.slogan_align)
-    p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after = Pt(0)
-    items = [s for s in footer_theme.slogan_segments if s.text.strip()]
-    for i, segment in enumerate(items):
-        text = segment.text.strip() + (" " if i < len(items) - 1 else "")
-        r = p.add_run(text)
-        _apply_run_style(r, segment.style)
+    The master DOCX already has a centered gradient badge, a native PAGE field,
+    carefully positioned contact drawings and a tab-aligned slogan. Rebuilding
+    that footer as a three-column table destroys its layout on some Word engines.
+    """
+    footer = doc.sections[0].footer
+    original = next(
+        (p for p in footer.paragraphs if any(run.text == "\t" for run in p.runs)),
+        None,
+    )
+    if original is None:
+        raise RuntimeError("Template footer gốc không có đoạn slogan/tab/số trang.")
+    if not any("PAGE" in (node.text or "").upper()
+               for node in original._p.xpath(".//w:instrText")):
+        raise RuntimeError("Template footer gốc không có PAGE field; không thể giữ layout chính xác.")
 
-    center = table.cell(0, 1)
-    center.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    _add_page_badge(center.paragraphs[0], footer_theme)
+    # Replace only plain text in the four existing slogan runs. Their individual
+    # Orbitron/Arial formatting and tab stops are part of the original design.
+    slogan_runs = []
+    for run in original.runs:
+        if "\t" in run.text:
+            break
+        if run.text:
+            slogan_runs.append(run)
+    segments = [seg for seg in footer_theme.slogan_segments if seg.text.strip()]
+    for index, run in enumerate(slogan_runs):
+        if index < len(segments):
+            tail = " " if index < len(segments) - 1 else ""
+            run.text = segments[index].text.strip() + tail
+            _apply_run_style(run, segments[index].style)
+        else:
+            run.text = ""
+    if len(segments) > len(slogan_runs) and slogan_runs:
+        remaining = " ".join(seg.text.strip() for seg in segments[len(slogan_runs):])
+        slogan_runs[-1].text = slogan_runs[-1].text.rstrip() + " " + remaining
+    # Never overwrite tabs or field runs. The original PAGE field auto-updates.
 
-    right = table.cell(0, 2)
-    right.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    p1 = right.paragraphs[0]
-    p1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    p1.paragraph_format.space_before = Pt(0)
-    p1.paragraph_format.space_after = Pt(0)
-    r = p1.add_run(f"{footer_theme.phone_symbol} {footer_theme.phone}".strip())
-    _apply_run_style(r, TextStyle(footer_theme.contact_font, footer_theme.contact_size, footer_theme.phone_color, footer_theme.contact_bold))
-    p2 = right.add_paragraph()
-    p2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    p2.paragraph_format.space_before = Pt(0)
-    p2.paragraph_format.space_after = Pt(0)
-    r = p2.add_run(f"{footer_theme.email_symbol} {footer_theme.email}".strip())
-    _apply_run_style(r, TextStyle(footer_theme.contact_font, footer_theme.contact_size, footer_theme.email_color, footer_theme.contact_bold))
+    # The original phone is an ordinary right-aligned run. Keep the artwork
+    # around it rather than replacing the whole footer paragraph.
+    plain_runs = [r for r in original.runs if r.text.strip()]
+    for run in reversed(plain_runs):
+        if re.fullmatch(r"[\d+()\s-]{6,}", run.text.strip()):
+            run.text = footer_theme.phone.strip()
+            _apply_run_style(
+                run, TextStyle(
+                    footer_theme.contact_font, footer_theme.contact_size,
+                    footer_theme.phone_color, footer_theme.contact_bold,
+                )
+            )
+            break
 
-    # Word requires a paragraph after a table in a header/footer; make it visually negligible.
-    tail = footer.add_paragraph()
-    tail.paragraph_format.space_before = Pt(0)
-    tail.paragraph_format.space_after = Pt(0)
-    tail.paragraph_format.line_spacing = Pt(1)
+    # Email is a textbox in the original master; edit its text node without
+    # touching DrawingML/VML position, dimensions, color or its contact icon.
+    for node in footer._element.xpath(".//w:t"):
+        old = node.text or ""
+        if re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", old):
+            node.text = re.sub(
+                r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+                footer_theme.email.strip(), old,
+            )
 
 
 def render_vocab_docx(
