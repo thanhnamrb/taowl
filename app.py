@@ -192,6 +192,8 @@ class FooterTheme:
     slogan_align: str = "left"
     phone: str = "0345286842"
     email: str = "email@yourcenter.com"
+    show_phone: bool = True
+    show_email: bool = True
     phone_symbol: str = "☎"
     email_symbol: str = "✉"
     contact_font: str = "Arial"
@@ -647,7 +649,6 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
 
     root_proto = table.rows[1]
     derivative_proto = table.rows[2]
-    merge_groups = []
 
     for family in document.families:
         family_rows = []
@@ -655,7 +656,12 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             source = root_proto if word_index == 0 else derivative_proto
             table._tbl.append(deepcopy(source._tr))
             row = table.rows[-1]
-            _set_cant_split(row)
+            # Allow a family, including a very long row, to flow to the next page.
+            # Word must never move a whole family solely to preserve its grouping.
+            tr_pr = row._tr.get_or_add_trPr()
+            cant_split = tr_pr.find(qn("w:cantSplit"))
+            if cant_split is not None:
+                tr_pr.remove(cant_split)
             for cell_index, c in enumerate(row.cells):
                 _clear_vmerge(c)
                 if cell_index == 0:
@@ -673,38 +679,19 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             _set_cell_text_preserve_geometry(row.cells[2], item.word_type, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[3], item.pronunciation, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[4], item.meaning, style=table_theme.body_text)
-            # A paragraph longer than one page MUST be allowed to flow. Do not
-            # force Word to keep an enormous row in one piece.
-            if max(len(item.meaning), len(item.pronunciation), len(item.word)) > 900:
-                trpr = row._tr.get_or_add_trPr()
-                cant_split = trpr.find(qn("w:cantSplit"))
-                if cant_split is not None:
-                    trpr.remove(cant_split)
-                for c in row.cells:
-                    for p in c.paragraphs:
-                        p.paragraph_format.keep_together = False
+            # Explicitly clear paragraph keep flags inherited from prototype.
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.keep_with_next = False
+                    paragraph.paragraph_format.keep_together = False
+                    paragraph.paragraph_format.widow_control = False
+            # Retain the orange family number rail visually, but do not merge cells:
+            # vertical merges spanning pages often leave large whitespace in Word.
             family_rows.append(row)
-
-        # Keep short word families together, but do not force a very large
-        # family onto one page (which can create excessive whitespace).
-        keep_group = len(family_rows) <= 4
-        for i, row in enumerate(family_rows):
-            _set_family_keep_next(row, keep_group and i < len(family_rows) - 1)
-            if any(len(c.text) > 900 for c in row.cells):
-                for c in row.cells:
-                    for p in c.paragraphs:
-                        p.paragraph_format.keep_together = False
-        if len(family_rows) > 1:
-            merge_groups.append(family_rows)
 
     table._tbl.remove(root_proto._tr)
     table._tbl.remove(derivative_proto._tr)
 
-    # One single continuous table. Apply vMerge only after all body text is final.
-    for family_rows in merge_groups:
-        _set_vmerge_tc(family_rows[0]._tr.tc_lst[0], restart=True)
-        for row in family_rows[1:]:
-            _set_vmerge_tc(row._tr.tc_lst[0], restart=False)
 
 
 
@@ -912,7 +899,10 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
     plain_runs = [r for r in original.runs if r.text.strip()]
     for run in reversed(plain_runs):
         if re.fullmatch(r"[\d+()\s-]{6,}", run.text.strip()):
-            run.text = (footer_theme.phone_symbol + " " + footer_theme.phone).strip()
+            run.text = (
+                (footer_theme.phone_symbol + " " + footer_theme.phone).strip()
+                if footer_theme.show_phone and footer_theme.phone.strip() else ""
+            )
             _apply_run_style(
                 run, TextStyle(
                     footer_theme.contact_font, footer_theme.contact_size,
@@ -929,11 +919,11 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
         if re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", old):
             node.text = re.sub(
                 r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
-                footer_theme.email.strip(), old,
+                footer_theme.email.strip() if footer_theme.show_email else "", old,
             )
             found_email = True
 
-    if footer_theme.email.strip() and not found_email:
+    if footer_theme.show_email and footer_theme.email.strip() and not found_email:
         # The original master has a right-aligned phone but no email run.
         # Add email immediately below it without touching background artwork.
         p_email = footer.add_paragraph(style="Footer")
