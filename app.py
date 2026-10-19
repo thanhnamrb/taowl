@@ -1354,9 +1354,46 @@ with tab_data:
             key="raw_data",
             placeholder='No.,Word,Type,Pronunciation,Meaning\n1,special,"adj, n",,\n,specially,adv,,',
         )
+        st.markdown("#### Bảng chỉnh sửa trực tiếp")
+        st.caption("Sửa ngay trong từng ô. Nhấn Áp dụng để đồng bộ bảng với CSV trước khi xuất. Cột No. để trống = cùng word family.")
+        try:
+            source_hash = hashlib.sha1(st.session_state.raw_data.encode("utf-8")).hexdigest()
+            if st.session_state.get("_editor_base_hash") != source_hash:
+                st.session_state["_editor_base_hash"] = source_hash
+                st.session_state["_editor_draft_csv"] = st.session_state.raw_data
+                st.session_state["_editor_frame"] = csv_to_editor_dataframe(st.session_state.raw_data)
+                st.session_state.pop("vocab_table_widget", None)
+            editable = st.data_editor(
+                st.session_state["_editor_frame"],
+                key="vocab_table_widget",
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "No.": st.column_config.TextColumn("No.", width="small"),
+                    "Word": st.column_config.TextColumn("Word", width="medium"),
+                    "Type": st.column_config.TextColumn("Type", width="small"),
+                    "Pronunciation": st.column_config.TextColumn("Pronunciation", width="medium"),
+                    "Meaning": st.column_config.TextColumn("Meaning", width="large"),
+                },
+            )
+            draft = editor_dataframe_to_csv(editable)
+            st.session_state["_editor_draft_csv"] = draft
+            col_apply, col_reset = st.columns([1, 1])
+            if col_apply.button("Áp dụng chỉnh sửa", type="primary", use_container_width=True):
+                st.session_state["raw_data"] = draft
+                st.session_state["_editor_base_hash"] = hashlib.sha1(draft.encode("utf-8")).hexdigest()
+                st.session_state["_editor_frame"] = editable.copy()
+                st.success("Đã cập nhật nội dung tài liệu.")
+            if col_reset.button("Hoàn tác về CSV", use_container_width=True):
+                st.session_state["_editor_base_hash"] = ""
+                st.rerun()
+        except ValueError as editor_error:
+            st.error(f"Không thể mở bảng chỉnh sửa: {editor_error}")
+
         try:
             preview_doc = parse_vocab_csv(
-                raw_data,
+                active_editor_csv(),
                 unit=st.session_state.unit,
                 heading_unit=st.session_state.heading_unit,
                 title=st.session_state.title,
@@ -1710,7 +1747,7 @@ with tab_export:
                 filename += ".docx"
 
             document = parse_vocab_csv(
-                st.session_state.raw_data,
+                active_editor_csv(),
                 unit=st.session_state.unit,
                 heading_unit=st.session_state.heading_unit,
                 title=st.session_state.title,
@@ -1748,6 +1785,8 @@ with tab_export:
                 finally:
                     tmp_path.unlink(missing_ok=True)
 
+            st.session_state["_last_export_bytes"] = output.getvalue()
+            st.session_state["_last_export_name"] = filename
             st.download_button(
                 "TẢI FILE WORD",
                 output.getvalue(),
@@ -1756,3 +1795,17 @@ with tab_export:
                 type="primary",
                 use_container_width=True,
             )
+
+
+# Export remains downloadable after a Streamlit rerun (editing controls, QA expansion).
+if st.session_state.get("_last_export_bytes"):
+    st.divider()
+    st.markdown("### File Word đã tạo gần nhất")
+    st.caption("Bạn có thể tải lại mà không cần tạo lại file. Nếu đã chỉnh sửa nội dung, hãy nhấn TẠO FILE WORD lần nữa để cập nhật.")
+    st.download_button(
+        "Tải lại DOCX gần nhất",
+        st.session_state["_last_export_bytes"],
+        file_name=st.session_state.get("_last_export_name", "VOCAB_BUILDER.docx"),
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True,
+    )
