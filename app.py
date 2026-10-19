@@ -690,6 +690,10 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
         keep_group = len(family_rows) <= 4
         for i, row in enumerate(family_rows):
             _set_family_keep_next(row, keep_group and i < len(family_rows) - 1)
+            if any(len(c.text) > 900 for c in row.cells):
+                for c in row.cells:
+                    for p in c.paragraphs:
+                        p.paragraph_format.keep_together = False
         if len(family_rows) > 1:
             merge_groups.append(family_rows)
 
