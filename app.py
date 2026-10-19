@@ -14,7 +14,7 @@ import streamlit as st
 import pandas as pd
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
@@ -846,7 +846,19 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
     carefully positioned contact drawings and a tab-aligned slogan. Rebuilding
     that footer as a three-column table destroys its layout on some Word engines.
     """
-    footer = doc.sections[0].footer
+    section = doc.sections[0]
+    footer = section.footer
+
+    # Master template's Footer style uses tabs at 3.25 / 6.5 inches, while its
+    # content area is 6.768 inches. That puts PAGE ~10pt LEFT of the badge.
+    # Preserve the original anchored badge, but correct tab stops to the exact
+    # center and right text margins on A4 (and other page sizes).
+    usable_width = section.page_width - section.left_margin - section.right_margin
+    stops = doc.styles["Footer"].paragraph_format.tab_stops
+    stops.clear_all()
+    stops.add_tab_stop(int(usable_width / 2), WD_TAB_ALIGNMENT.CENTER)
+    stops.add_tab_stop(int(usable_width), WD_TAB_ALIGNMENT.RIGHT)
+
     original = next(
         (p for p in footer.paragraphs if any(run.text == "\t" for run in p.runs)),
         None,
@@ -883,7 +895,7 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
     plain_runs = [r for r in original.runs if r.text.strip()]
     for run in reversed(plain_runs):
         if re.fullmatch(r"[\d+()\s-]{6,}", run.text.strip()):
-            run.text = footer_theme.phone.strip()
+            run.text = (footer_theme.phone_symbol + " " + footer_theme.phone).strip()
             _apply_run_style(
                 run, TextStyle(
                     footer_theme.contact_font, footer_theme.contact_size,
@@ -894,6 +906,7 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
 
     # Email is a textbox in the original master; edit its text node without
     # touching DrawingML/VML position, dimensions, color or its contact icon.
+    found_email = False
     for node in footer._element.xpath(".//w:t"):
         old = node.text or ""
         if re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", old):
@@ -901,6 +914,25 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
                 r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
                 footer_theme.email.strip(), old,
             )
+            found_email = True
+
+    if footer_theme.email.strip() and not found_email:
+        # The original master has a right-aligned phone but no email run.
+        # Add email immediately below it without touching background artwork.
+        p_email = footer.add_paragraph(style="Footer")
+        p_email.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p_email.paragraph_format.space_before = Pt(0)
+        p_email.paragraph_format.space_after = Pt(0)
+        p_email.paragraph_format.line_spacing = 1.0
+        email_run = p_email.add_run(
+            (footer_theme.email_symbol + " " + footer_theme.email).strip()
+        )
+        _apply_run_style(
+            email_run, TextStyle(
+                footer_theme.contact_font, footer_theme.contact_size,
+                footer_theme.email_color, footer_theme.contact_bold,
+            )
+        )
 
 
 def render_vocab_docx(
