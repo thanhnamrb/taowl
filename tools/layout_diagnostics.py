@@ -27,3 +27,13 @@ for i,t in enumerate(s.footer.tables):table_info(t,f"TEMPLATE FOOTER TABLE {i}")
 with zipfile.ZipFile(ROOT/"templates"/"lx_vocab_template.docx") as z:
     print("TEMPLATE MEDIA",[(n,len(z.read(n))) for n in z.namelist() if n.startswith("word/media/")])
     print("TEMPLATE PAGE fields", [n for n in z.namelist() if n.startswith("word/footer") and n.endswith(".xml")])
+
+print("TEMPLATE FIRST PAGE DIFFERENT?",s.different_first_page_header_footer)
+for label,part in (("default footer",s.footer),("first footer",s.first_page_footer),("even footer",s.even_page_footer)):
+    print("==",label,"linked",part.is_linked_to_previous)
+    for pno,p in enumerate(part.paragraphs):
+        print(" para",pno,"align",p.alignment,"style",p.style.name,"tabs",str(p.paragraph_format.tab_stops._element.xml)[:1700] if p.paragraph_format.tab_stops._element is not None else "")
+        for i,r in enumerate(p.runs):
+            print("  RUN",i, "text",repr(r.text[:160]),"font",r.font.name,"size",r.font.size.pt if r.font.size else None,"field",r._r.xpath(".//w:instrText"),"drawings",len(r._r.xpath(".//w:drawing")),"pict",len(r._r.xpath(".//w:pict")))
+    if label=="default footer":
+        print("footer xml",part._element.xml[:14000])
