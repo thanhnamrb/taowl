@@ -1240,6 +1240,7 @@ def _apply_vocabulary_draft() -> None:
     st.session_state["_editor_base_hash"] = hashlib.sha1(
         st.session_state["raw_data"].encode("utf-8")
     ).hexdigest()
+    st.session_state["_editor_frame"] = csv_to_editor_dataframe(st.session_state["raw_data"])
     st.session_state.pop("vocab_table_widget", None)
 
 
