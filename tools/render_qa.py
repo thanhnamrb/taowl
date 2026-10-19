@@ -70,6 +70,8 @@ for title,unit,count in [
     pdf=fitz.open(path.with_suffix('.pdf'))
     print('PDF',unit,'pages',len(pdf),'page size',pdf[0].rect,'expected rows',count*2)
     if unit == '10.1':
+        if '10.1' not in pdf[0].get_text():
+            raise AssertionError('The 10.1 badge wrapped instead of staying on one line')
         for i, page in enumerate(pdf):
             if i >= len(pdf)-1:
                 break
@@ -114,3 +116,35 @@ for title,unit,count in [
     if count>15:
         last=pdf[-1]
         last.get_pixmap(matrix=fitz.Matrix(1.5,1.5),alpha=False).save(DEST/f'{unit.replace(".","_")}-last.png')
+
+
+# Verify the *actual PDF*, not only XML, for each contact visibility mode.
+for show_phone, show_email in ((False, False), (False, True), (True, False)):
+    theme=N['default_theme']()
+    theme.footer.show_phone=show_phone
+    theme.footer.show_email=show_email
+    test_doc=N['parse_vocab_csv'](
+        '1,protect,v,/prəˈtekt/,bảo vệ\n,protection,n,/prəˈtekʃn/,sự bảo vệ',
+        unit='1.1',title='HIDDEN CONTACT TEST',
+    )
+    tag=f"phone-{int(show_phone)}-email-{int(show_email)}"
+    filename=DEST/(tag+'.docx')
+    filename.write_bytes(N['render_vocab_docx'](
+        test_doc,template_path=MASTER,theme=theme,
+    ).getvalue())
+    proc=subprocess.run(
+        ['libreoffice','-env:UserInstallation=file:///tmp/taowl_lo_studio',
+         '--headless','--convert-to','pdf:writer_pdf_Export','--outdir',str(DEST),str(filename)],
+        capture_output=True,text=True,timeout=120,
+    )
+    if proc.returncode:
+        raise RuntimeError(f"Hidden-contact render failed: {proc.stderr}")
+    pdf=fitz.open(filename.with_suffix('.pdf'))
+    text=pdf[0].get_text()
+    print("FOOTER-VISIBILITY",tag,"phone",("0345286842" in text),"email",("email@yourcenter.com" in text))
+    if ("0345286842" in text) != show_phone or ("email@yourcenter.com" in text) != show_email:
+        raise AssertionError("Contact visibility in rendered PDF does not match settings")
+    if not show_phone and not show_email:
+        page=pdf[0]
+        footer_region=fitz.Rect(0,page.rect.height-115,page.rect.width,page.rect.height)
+        page.get_pixmap(matrix=fitz.Matrix(2,2),clip=footer_region,alpha=False).save(DEST/"footer-without-contacts.png")
