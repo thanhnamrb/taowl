@@ -710,12 +710,6 @@ def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) ->
     bold_xml = "<w:b/><w:bCs/>" if style.bold else ""
     italic_xml = "<w:i/><w:iCs/>" if style.italic else ""
     rpr = f"""<w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:eastAsia="{font}" w:cs="{font}"/>{bold_xml}{italic_xml}<w:color w:val="{color}"/><w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/></w:rPr>"""
-    field_runs = f"""
-      <w:r>{rpr}<w:fldChar w:fldCharType="begin"/></w:r>
-      <w:r>{rpr}<w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>
-      <w:r>{rpr}<w:fldChar w:fldCharType="separate"/></w:r>
-      <w:r>{rpr}<w:t>1</w:t></w:r>
-      <w:r>{rpr}<w:fldChar w:fldCharType="end"/></w:r>"""
     xml = f"""
     <w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
@@ -1086,7 +1080,7 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
             badge = _clean_cell_text(title_table.rows[0].cells[0].text)
             doctype = _clean_cell_text(title_table.rows[0].cells[2].text)
             heading = _clean_cell_text(title_table.rows[1].cells[2].text)
-            match = re.match(r"^(UNIT|MODULE)\\s+([A-Za-z0-9._-]+)\\s*[:\\-]\\s*(.+)$", heading, re.IGNORECASE)
+            match = re.match(r"^(UNIT|MODULE)\s+([A-Za-z0-9._-]+)\s*[:-]\s*(.+)$", heading, re.IGNORECASE)
             if match:
                 metadata["section_label"] = match.group(1).upper()
                 metadata["heading_unit"] = match.group(2)
