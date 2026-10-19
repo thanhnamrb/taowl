@@ -1571,6 +1571,7 @@ st.caption("Template gốc được giữ nguyên. Bạn chỉ cần dùng tab S
 
 quick_generate = False
 
+studio_generate = False
 with tab_studio:
     st.markdown("### Header & Footer — xem và chỉnh sửa ngay")
     st.caption(
@@ -1631,6 +1632,35 @@ with tab_studio:
         "Để sửa bảng như trong Word, mở tab **02 · Từ vựng** và chỉnh từng ô trực tiếp. "
         "Các tính năng gõ chữ phong phú như track changes chưa được hỗ trợ."
     )
+    if source_mode != "Chuyển hàng loạt Word cũ":
+        studio_generate = st.button(
+            "Tạo file Word với Header/Footer này",
+            key="studio_visual_generate", type="primary", use_container_width=True,
+        )
+        if studio_generate:
+            try:
+                candidate = parse_vocab_csv(
+                    active_editor_csv(), unit=st.session_state.unit,
+                    heading_unit=st.session_state.heading_unit, title=st.session_state.title,
+                    section_label=st.session_state.section_label,
+                    document_type=st.session_state.document_type,
+                )
+                errors = [m.message for m in validate_vocab(candidate) if m.level == "error"]
+                if errors:
+                    for message in errors:
+                        st.error(message)
+                    studio_generate = False
+            except Exception as exc:
+                st.error(f"Không thể tạo file: {exc}")
+                studio_generate = False
+        if st.session_state.get("_last_export_bytes"):
+            st.download_button(
+                "Tải DOCX vừa tạo",
+                st.session_state["_last_export_bytes"],
+                file_name=st.session_state.get("_last_export_name", "VOCAB_BUILDER.docx"),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="studio_visual_download", use_container_width=True,
+            )
 
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
@@ -1972,7 +2002,7 @@ with tab_export:
         help="Batch QA sẽ chậm hơn vì app phải đọc lại từng DOCX vừa sinh." if is_batch else None,
     )
     button_label = "TẠO ZIP HÀNG LOẠT" if is_batch else "TẠO FILE WORD"
-    generate = st.button(button_label, type="primary", use_container_width=True) or quick_generate
+    generate = st.button(button_label, type="primary", use_container_width=True) or quick_generate or studio_generate
 
     if generate:
         if not TEMPLATE_PATH.exists():
@@ -2169,7 +2199,7 @@ with tab_export:
 
             st.session_state["_last_export_bytes"] = output.getvalue()
             st.session_state["_last_export_name"] = filename
-            if quick_generate:
+            if quick_generate or studio_generate:
                 st.rerun()  # Show download beside the editor in the same workflow.
             st.download_button(
                 "TẢI FILE WORD",
