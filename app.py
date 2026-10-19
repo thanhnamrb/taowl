@@ -504,6 +504,23 @@ def _set_vmerge_tc(tc, *, restart: bool) -> None:
 
 
 
+def _hide_family_rail_horizontal_rule(cell, *, top: bool = False, bottom: bool = False) -> None:
+    """Keep the original merged orange-rail appearance without Word vMerge."""
+    pr = cell._tc.get_or_add_tcPr()
+    borders = pr.find(qn("w:tcBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tcBorders")
+        pr.append(borders)
+    for edge_name, hide in (("top", top), ("bottom", bottom)):
+        if not hide:
+            continue
+        edge = borders.find(qn("w:" + edge_name))
+        if edge is None:
+            edge = OxmlElement("w:" + edge_name)
+            borders.append(edge)
+        edge.set(qn("w:val"), "nil")
+
+
 def _set_cell_no_wrap(cell, enabled: bool = True) -> None:
     tcpr = cell._tc.get_or_add_tcPr()
     node = tcpr.find(qn("w:noWrap"))
@@ -691,6 +708,12 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             # Retain the orange family number rail visually, but do not merge cells:
             # vertical merges spanning pages often leave large whitespace in Word.
             family_rows.append(row)
+
+        # A seamless orange No. rail, even if the family crosses a page break.
+        for i, number_row in enumerate(family_rows):
+            _hide_family_rail_horizontal_rule(
+                number_row.cells[0], top=i > 0, bottom=i < len(family_rows) - 1,
+            )
 
     table._tbl.remove(root_proto._tr)
     table._tbl.remove(derivative_proto._tr)
@@ -1341,6 +1364,10 @@ def _sync_studio_title() -> None:
     st.session_state["title"] = st.session_state["studio_edit_title"]
 
 
+def _sync_sidebar_title() -> None:
+    st.session_state["studio_edit_title"] = st.session_state["title"]
+
+
 @st.cache_data(show_spinner=False)
 def _original_logo_image() -> str:
     """Use the actual branded image extracted from a DOCX render, not a substitute."""
@@ -1493,6 +1520,8 @@ with st.sidebar:
                         if meta.get(key):
                             st.session_state[key] = meta[key]
                     st.session_state["raw_data"] = csv_text
+                    if meta.get("title"):
+                        st.session_state["studio_edit_title"] = meta["title"]
                     st.session_state["_old_doc_digest"] = digest
                     st.session_state["_import_notes"] = import_notes
                     st.session_state.pop("_import_error", None)
@@ -1518,7 +1547,7 @@ with st.sidebar:
     st.text_input("Sub-unit / badge", key="unit", help="Ví dụ 5.1 – hiển thị trong ô cam bên trái.")
     st.text_input("Số ở heading", key="heading_unit", help="Ví dụ 5 → UNIT 5: SPECIAL DAYS")
     st.text_input("Document type", key="document_type")
-    st.text_input("Title", key="title")
+    st.text_input("Title", key="title", on_change=_sync_sidebar_title)
     st.text_input("Tên file tải về", key="filename")
     if source_mode == "Chuyển hàng loạt Word cũ":
         st.caption("Các ô metadata phía trên chỉ dùng cho chế độ tạo mới / 1 file. Batch sẽ dùng metadata của từng DOCX.")
