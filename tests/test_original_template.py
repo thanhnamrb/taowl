@@ -5,6 +5,8 @@ without starting a Streamlit session.
 """
 import ast
 import io
+import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -12,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / "app.py").read_text(encoding="utf-8")
 module = ast.parse(source)
 cut = source.index("# ===================== STREAMLIT UI =====================")
-namespace = {"__name__": "taowl_render_test"}
+test_module = types.ModuleType("taowl_render_test")
+sys.modules[test_module.__name__] = test_module
+namespace = test_module.__dict__
 exec(compile(source[:cut], str(ROOT / "app.py"), "exec"), namespace)
 
 from docx import Document
