@@ -1077,7 +1077,27 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
         "heading_unit": "",
         "title": "",
     }
-    if title_text:
+
+    # The ORIGINAL branded template stores title text in table cells, not in
+    # doc.paragraphs. Reading these cells enables lossless re-import of app exports.
+    if doc.tables and len(doc.tables[0].rows) >= 2:
+        title_table = doc.tables[0]
+        try:
+            badge = _clean_cell_text(title_table.rows[0].cells[0].text)
+            doctype = _clean_cell_text(title_table.rows[0].cells[2].text)
+            heading = _clean_cell_text(title_table.rows[1].cells[2].text)
+            match = re.match(r"^(UNIT|MODULE)\\s+([A-Za-z0-9._-]+)\\s*[:\\-]\\s*(.+)$", heading, re.IGNORECASE)
+            if match:
+                metadata["section_label"] = match.group(1).upper()
+                metadata["heading_unit"] = match.group(2)
+                metadata["unit"] = badge or metadata["heading_unit"]
+                metadata["title"] = match.group(3).strip()
+                if doctype:
+                    metadata["document_type"] = doctype.upper()
+        except (IndexError, AttributeError):
+            pass
+
+    if not metadata["title"]:
         match = TITLE_RE.search(title_text)
         if match:
             metadata["document_type"] = " ".join(match.group("doctype").upper().split())
@@ -1085,10 +1105,10 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
             metadata["unit"] = match.group("unit").strip()
             metadata["heading_unit"] = metadata["unit"].split(".", 1)[0]
             metadata["title"] = match.group("title").strip()
-        else:
+        elif title_text:
             notes.append(f"Đọc được title nhưng chưa tách tự động hoàn toàn: {title_text}")
-    else:
-        notes.append("Không tìm thấy dòng title VOCAB BUILDER; hãy nhập metadata thủ công.")
+        else:
+            notes.append("Không đọc được title; hãy kiểm tra metadata trước khi xuất.")
 
     table = _find_vocab_table(doc)
     if table is None:
@@ -1114,7 +1134,11 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
         # python-docx often returns the merged No. value on every merged row.
         # Consecutive repeats therefore become blank continuation rows.
         out_no = no
-        if no and previous_no == no:
+        first_tc = row._tr.tc_lst[0]
+        tcpr = first_tc.tcPr
+        vmerge = tcpr.find(qn("w:vMerge")) if tcpr is not None else None
+        is_merged_continuation = vmerge is not None and vmerge.get(qn("w:val")) != "restart"
+        if no and previous_no == no and is_merged_continuation:
             out_no = ""
         elif no:
             previous_no = no
