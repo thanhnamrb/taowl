@@ -5,6 +5,8 @@ without starting a Streamlit session.
 """
 import ast
 import io
+import hashlib
+from zipfile import ZipFile
 import sys
 import types
 import unittest
@@ -44,6 +46,33 @@ class OriginalTemplateTests(unittest.TestCase):
         self.assertEqual(len(original.sections), len(produced.sections))
         self.assertGreaterEqual(len(produced.tables), 2)
         self.assertIn("SPECIAL DAYS", produced.tables[0].rows[1].cells[2].text)
+
+    def test_embedded_brand_images_are_byte_for_byte_preserved(self):
+        generated = namespace["render_vocab_docx"](self.sample(), template_path=self.template).getvalue()
+        with ZipFile(self.template) as master_zip, ZipFile(io.BytesIO(generated)) as output_zip:
+            master_media = {
+                n: hashlib.sha256(master_zip.read(n)).hexdigest()
+                for n in master_zip.namelist() if n.startswith("word/media/")
+            }
+            output_media = {
+                n: hashlib.sha256(output_zip.read(n)).hexdigest()
+                for n in output_zip.namelist() if n.startswith("word/media/")
+            }
+            self.assertEqual(master_media, output_media)
+
+    def test_very_large_word_family_may_span_pages(self):
+        rows = ["No.,Word,Type,Pronunciation,Meaning"]
+        for i in range(14):
+            rows.append(("1" if i == 0 else "") + f",longword{i},n,/lɒŋ/,nghĩa {i}")
+        rows.append(",overflowword,n,/ˈəʊvəfləʊ/," + "very long meaning " * 95)
+        doc = namespace["parse_vocab_csv"]("\n".join(rows), unit="1.1", title="LONG FAMILY")
+        generated = Document(io.BytesIO(
+            namespace["render_vocab_docx"](doc, template_path=self.template).getvalue()
+        ))
+        table = generated.tables[1]
+        self.assertEqual(len(table.rows), 16)
+        self.assertFalse(bool(table.rows[1].cells[1].paragraphs[0].paragraph_format.keep_with_next))
+        self.assertFalse(bool(table.rows[-1].cells[4].paragraphs[0].paragraph_format.keep_together))
 
     def test_long_title_and_page_field(self):
         title = "SPECIAL DAYS AND CULTURAL FESTIVALS AROUND THE WORLD"
