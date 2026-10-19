@@ -9,6 +9,7 @@ from pathlib import Path
 import fitz
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 DEST=ROOT/"qa_output"
 DEST.mkdir(exist_ok=True)
 source=(ROOT/"app.py").read_text(encoding="utf-8")
