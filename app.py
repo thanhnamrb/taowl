@@ -11,6 +11,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import streamlit as st
+import pandas as pd
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -1147,6 +1148,44 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
     return metadata, out.getvalue(), notes
 
 
+# ===================== EDITOR HELPERS =====================
+EDITOR_COLUMNS = ["No.", "Word", "Type", "Pronunciation", "Meaning"]
+
+
+def csv_to_editor_dataframe(raw_data: str) -> pd.DataFrame:
+    """Create a faithful, editable five-column view of the source CSV."""
+    rows = list(csv.reader(io.StringIO(raw_data or "")))
+    rows = [row for row in rows if row and any(value.strip() for value in row)]
+    if rows and _looks_like_header(rows[0]):
+        rows = rows[1:]
+    records = []
+    for i, row in enumerate(rows, start=1):
+        if len(row) > 5:
+            raise ValueError(f"Dòng CSV {i}: quá 5 cột. Hãy đặt các nghĩa có dấu phẩy trong dấu ngoặc kép.")
+        records.append(dict(zip(EDITOR_COLUMNS, (list(row) + [""] * 5)[:5])))
+    return pd.DataFrame.from_records(records, columns=EDITOR_COLUMNS).fillna("")
+
+
+def editor_dataframe_to_csv(df: pd.DataFrame) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(EDITOR_COLUMNS)
+    for values in df[EDITOR_COLUMNS].fillna("").itertuples(index=False, name=None):
+        cells = [str(value).strip() for value in values]
+        if any(cells):
+            writer.writerow(cells)
+    return output.getvalue()
+
+
+def active_editor_csv() -> str:
+    """Keep unsaved data-editor changes available to Generate immediately."""
+    original = st.session_state.get("raw_data", "")
+    original_hash = hashlib.sha1(original.encode("utf-8")).hexdigest()
+    if st.session_state.get("_editor_base_hash") == original_hash:
+        return st.session_state.get("_editor_draft_csv", original)
+    return original
+
+
 # ===================== STREAMLIT UI =====================
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = BASE_DIR / "templates" / "lx_vocab_template.docx"
@@ -1197,17 +1236,37 @@ _ensure_defaults()
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1320px;}
-    [data-testid="stSidebar"] {background: #F7F9FA;}
-    .lx-title {font-size: 2rem; font-weight: 800; margin-bottom: .1rem;}
-    .lx-sub {color:#52636c; margin-bottom: 1rem;}
-    .lx-chip {display:inline-block; padding:.25rem .55rem; border-radius:999px;
-              background:#eef4f7; margin-right:.35rem; font-size:.85rem;}
+    .block-container {padding-top: 1.4rem; padding-bottom: 2.5rem; max-width: 1430px;}
+    [data-testid="stSidebar"] {background: #f6f8fa; border-right: 1px solid #e3e9ed;}
+    [data-testid="stSidebar"] h3 {font-weight: 760; color: #16384c;}
+    div[data-testid="stMetric"] {background: #f6f9fb; border: 1px solid #e4ebef;
+       border-radius: 14px; padding: 12px 18px;}
+    div[data-testid="stMetric"] label {color: #527083;}
+    div[data-testid="stTabs"] button[aria-selected="true"] {color: #b95725;}
+    .lx-hero {background: linear-gradient(125deg,#10364c,#1a5266);
+       color: white; border-radius: 20px; padding: 26px 32px;
+       margin-bottom: 18px; box-shadow: 0 10px 32px rgba(21,61,81,.12);}
+    .lx-hero .eyebrow {font-weight: 750; font-size: .76rem; color: #ffc3a4;
+       letter-spacing: .17em; margin-bottom: 6px;}
+    .lx-hero h1 {font-size: 2rem; font-weight: 790; line-height: 1.2;
+       color: #fff; margin: 0 0 6px;}
+    .lx-hero p {color: #d9e9f0; font-size: .96rem; margin: 0;}
+    .lx-note {border-left: 3px solid #bf4e14; background:#faf6f2;
+       padding: 10px 14px; border-radius: 4px 10px 10px 4px;
+       margin: 12px 0; color:#654334;}
     </style>
-    <div class="lx-title">LingualXplore · VOCAB Builder V4.1</div>
-    <div class="lx-sub">Tạo mới · chuyển 1 file hoặc hàng loạt DOCX cũ → theme mới · Header/Footer linh hoạt · bảng liền mạch.</div>
+    <div class="lx-hero">
+        <div class="eyebrow">LINGUALXPLORE • DOCUMENT STUDIO</div>
+        <h1>VOCAB Builder <span style="color:#f4ad83">Studio</span></h1>
+        <p>Một template gốc duy nhất • Soạn thảo trực quan • Xuất Word đúng nhận diện của bạn</p>
+    </div>
     """,
     unsafe_allow_html=True,
+)
+advanced_mode = st.toggle(
+    "Bật chế độ thiết kế nâng cao",
+    value=False,
+    help="Mặc định dùng toàn bộ màu, font, logo, header và footer gốc. Chỉ bật khi bạn thật sự muốn chỉnh từng thành phần.",
 )
 
 # -------------------- SOURCE / IMPORT FIRST (before widgets bound to metadata keys) --------------------
@@ -1269,10 +1328,13 @@ with st.sidebar:
     if st.session_state.get("_import_error") and source_mode == "Chuyển 1 file Word cũ":
         st.error(st.session_state["_import_error"])
 
-# -------------------- TABS --------------------
-tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
-    ["📥 Dữ liệu", "🎨 Header & Title", "🧩 Bảng", "🦶 Footer", "✅ Xuất file"]
-)
+# -------------------- STUDIO TABS --------------------
+if advanced_mode:
+    tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
+        ["01 · Soạn từ vựng", "02 · Header / Title", "03 · Bảng", "04 · Footer", "05 · Xuất Word"]
+    )
+else:
+    tab_data, tab_export = st.tabs(["01 · Soạn từ vựng", "02 · Xuất Word"])
 
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
