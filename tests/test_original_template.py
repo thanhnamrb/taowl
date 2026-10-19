@@ -47,6 +47,37 @@ class OriginalTemplateTests(unittest.TestCase):
         self.assertGreaterEqual(len(produced.tables), 2)
         self.assertIn("SPECIAL DAYS", produced.tables[0].rows[1].cells[2].text)
 
+    def test_contact_visibility_options_are_independent(self):
+        from docx import Document
+        for show_phone, show_email in ((False, False), (False, True), (True, False), (True, True)):
+            theme = namespace["default_theme"]()
+            theme.footer.show_phone = show_phone
+            theme.footer.show_email = show_email
+            data = namespace["render_vocab_docx"](
+                self.sample(), template_path=self.template, theme=theme,
+            ).getvalue()
+            footer_text = Document(io.BytesIO(data)).sections[0].footer._element.xml
+            self.assertEqual("0345286842" in footer_text, show_phone)
+            self.assertEqual("email@yourcenter.com" in footer_text, show_email)
+            self.assertIn("PAGE", footer_text)
+
+    def test_each_family_row_can_continue_to_next_page(self):
+        rows = ["No.,Word,Type,Pronunciation,Meaning"]
+        for i in range(18):
+            rows.append(("1" if i == 0 else "") + f",word{i},n,/tɛst/,nghĩa {i}")
+        doc = namespace["parse_vocab_csv"]("\n".join(rows), unit="3.1", title="LONG GROUP")
+        generated = Document(io.BytesIO(
+            namespace["render_vocab_docx"](doc, template_path=self.template).getvalue()
+        ))
+        tbl = generated.tables[1]
+        self.assertEqual(len(tbl.rows), 19)
+        for row in tbl.rows[1:]:
+            self.assertEqual(len(row._tr.xpath("./w:trPr/w:cantSplit")), 0)
+            for cell in row.cells:
+                self.assertFalse(bool(cell.paragraphs[0].paragraph_format.keep_with_next))
+                self.assertFalse(bool(cell.paragraphs[0].paragraph_format.keep_together))
+        self.assertEqual(len(tbl._tbl.xpath(".//w:vMerge")), 0)
+
     def test_embedded_brand_images_are_byte_for_byte_preserved(self):
         generated = namespace["render_vocab_docx"](self.sample(), template_path=self.template).getvalue()
         with ZipFile(self.template) as master_zip, ZipFile(io.BytesIO(generated)) as output_zip:
