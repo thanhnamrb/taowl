@@ -12,7 +12,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import streamlit as st
 from docx import Document
-from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -117,13 +117,13 @@ def parse_vocab_csv(
         row = list(row)
         while len(row) < 5:
             row.append("")
-        row = row[:5]
+        if len(row) > 5:
+            raise ValueError(f"Dòng CSV {source_index} có {len(row)} cột (cần 5). Dấu phẩy trong nghĩa cần đặt trong dấu ngoặc kép.")
 
         no, word, word_type, pronunciation, meaning = (c.strip() for c in row)
 
         if not word:
-            # The validator will catch meaningful malformed rows. Pure blank rows were removed above.
-            continue
+            raise ValueError(f"Dòng CSV {source_index} thiếu cột Word.")
 
         if no:
             current_family = VocabFamily(number=no)
@@ -294,9 +294,13 @@ def _set_single_run_paragraph(paragraph, text: str, style: TextStyle, *, align=N
 
 def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig) -> None:
     title = doc.tables[0]
+    # Preserve the original title artwork but allow rows to grow for long text.
+    for row in title.rows:
+        row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
 
     badge = title.rows[0].cells[0]
     badge.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_no_wrap(badge, False)
     _set_single_run_paragraph(
         badge.paragraphs[0], document.unit_badge, theme.badge,
         align=WD_ALIGN_PARAGRAPH.CENTER,
@@ -304,6 +308,7 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
 
     type_cell = title.rows[0].cells[2]
     type_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_no_wrap(type_cell, False)
     _set_single_run_paragraph(
         type_cell.paragraphs[0], document.document_type.upper(), theme.document_type,
         align=WD_ALIGN_PARAGRAPH.LEFT,
@@ -311,11 +316,16 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
 
     main = title.rows[1].cells[2]
     main.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_no_wrap(main, False)
     while len(main.paragraphs) > 1:
         p = main.paragraphs[-1]._element
         p.getparent().remove(p)
     heading = f"{document.section_label} {document.display_heading_unit}: {document.title.upper()}"
-    _set_single_run_paragraph(main.paragraphs[0], heading, theme.heading, align=WD_ALIGN_PARAGRAPH.LEFT)
+    heading_style = deepcopy(theme.heading)
+    if len(heading) > 46:
+        heading_style.size = max(18.0, heading_style.size * 46 / len(heading))
+    _set_single_run_paragraph(main.paragraphs[0], heading, heading_style, align=WD_ALIGN_PARAGRAPH.LEFT)
+    main.paragraphs[0].paragraph_format.line_spacing = 1.05
 
 
 def _alignment(value: str):
@@ -691,7 +701,7 @@ def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) ->
     """Add a DrawingML gradient badge with a PAGE field inside its textbox."""
     size_pt = max(18.0, min(40.0, float(footer_theme.page_badge_size_pt)))
     size_emu = int(round(size_pt * 12700))
-    y_offset = -int(round(size_emu * 0.48))
+    y_offset = 0  # background aligned to the normal PAGE field
     base = _hex(footer_theme.page_fill, "BF4E14")
     style = footer_theme.page_text
     font = style.font
@@ -712,7 +722,7 @@ def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) ->
         xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
         xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
       <wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0"
-          relativeHeight="251680768" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+          relativeHeight="251680768" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1">
         <wp:simplePos x="0" y="0"/>
         <wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH>
         <wp:positionV relativeFrom="paragraph"><wp:posOffset>{y_offset}</wp:posOffset></wp:positionV>
@@ -748,7 +758,6 @@ def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) ->
                 <w:txbxContent>
                   <w:p>
                     <w:pPr><w:spacing w:before="0" w:after="0"/><w:jc w:val="center"/></w:pPr>
-                    {field_runs}
                   </w:p>
                 </w:txbxContent>
               </wps:txbx>
@@ -772,6 +781,18 @@ def _add_page_badge(paragraph, footer_theme: FooterTheme) -> None:
     paragraph.paragraph_format.space_after = Pt(0)
     paragraph.paragraph_format.line_spacing = Pt(max(18.0, float(footer_theme.page_badge_size_pt)))
     _add_gradient_page_badge_background(paragraph, footer_theme)
+    # The editable PAGE field lives in the footer text, not a floating textbox.
+    for field_type, instruction, cached in (
+        ("begin", None, None),
+        (None, " PAGE ", None),
+        ("separate", None, None),
+        (None, None, "1"),
+        ("end", None, None),
+    ):
+        _append_page_field_run(
+            paragraph._p, footer_theme.page_text,
+            cached_text=cached, field_type=field_type, instruction=instruction,
+        )
 
 
 def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
@@ -783,10 +804,9 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     # Balanced columns make the page badge mathematically centered in the text area.
-    left_w = Inches(3.0)
     center_w = Inches(0.78)
-    right_w = content_width - left_w - center_w
-    widths = [left_w, center_w, right_w]
+    side_w = (content_width - center_w) / 2
+    widths = [side_w, center_w, side_w]
     for i, width in enumerate(widths):
         table.columns[i].width = width
         table.cell(0, i).width = width
@@ -843,6 +863,13 @@ def render_vocab_docx(
     _set_title_block(doc, document, theme)
     _populate_vocab_table(doc, document, theme.table)
     _set_footer(doc, theme.footer)
+    # Request PAGE field refresh when Microsoft Word opens the document.
+    settings = doc.settings.element
+    update = settings.find(qn("w:updateFields"))
+    if update is None:
+        update = OxmlElement("w:updateFields")
+        settings.append(update)
+    update.set(qn("w:val"), "true")
 
     output = io.BytesIO()
     doc.save(output)
