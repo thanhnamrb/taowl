@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import base64
+from html import escape as html_escape
 import re
 import tempfile
 from copy import deepcopy
@@ -12,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import streamlit as st
 import pandas as pd
+from PIL import Image as PILImage
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
@@ -1321,6 +1324,95 @@ def font_select(label: str, default: str, *, key: str, help: str | None = None):
     return st.selectbox(label, FONT_OPTIONS, index=_font_index(default), key=key, help=help)
 
 
+
+# ===================== VISUAL DOCUMENT STUDIO =====================
+def _sync_studio_words(source: str, prefix: str, indexes: tuple[int, ...]) -> None:
+    """Update the original formatted runs from one simple text field."""
+    words = (st.session_state.get(source) or "").strip().split()
+    for position, index in enumerate(indexes):
+        if position < len(indexes) - 1:
+            value = words[position] if position < len(words) else ""
+        else:
+            value = " ".join(words[position:])
+        st.session_state[f"{prefix}_text_{index}"] = value
+
+
+def _sync_studio_title() -> None:
+    st.session_state["title"] = st.session_state["studio_edit_title"]
+
+
+@st.cache_data(show_spinner=False)
+def _original_logo_image() -> str:
+    """Use the actual branded image extracted from a DOCX render, not a substitute."""
+    preview = Path(__file__).resolve().parent / "assets" / "lingualxplore-template-preview.png"
+    if not preview.is_file():
+        return ""
+    with PILImage.open(preview) as picture:
+        factor = picture.width / 893.0
+        area = tuple(round(v * factor) for v in (44, 31, 270, 105))
+        cropped = picture.crop(area).convert("RGB")
+        out = io.BytesIO()
+        cropped.save(out, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode("ascii")
+
+
+def _studio_page_html(*, label: str, heading: str, document_type: str, badge: str,
+                      h1: str, h2: str, slogan: str, phone: str, email: str,
+                      show_phone: bool, show_email: bool) -> str:
+    """A responsive LIVE visual approximation; actual layout remains the master DOCX."""
+    logo = _original_logo_image()
+    logo_html = (f'<img src="{logo}" alt="LingualXplore" style="width:100%;max-width:180px;height:auto">'
+                 if logo else '<span style="font-size:20px;color:#df9d79">LingualXplore</span>')
+    contact = ""
+    if show_phone and phone.strip():
+        contact += '<div style="color:#cd885f">☎ ' + html_escape(phone) + '</div>'
+    if show_email and email.strip():
+        contact += '<div style="color:#7795a6">✉ ' + html_escape(email) + '</div>'
+    return f"""
+    <div style="background:white;border:1px solid #dde4e8;border-radius:14px;
+                box-shadow:0 12px 28px #16394e18;padding:22px;min-height:410px;
+                display:flex;flex-direction:column;color:#111;">
+       <div style="display:grid;grid-template-columns:43% 57%;align-items:start;gap:8px;">
+          <div>{logo_html}</div>
+          <div style="text-align:right;font-size:11px;line-height:1.6">
+             <div style="color:#e4a585">{html_escape(h1)}</div>
+             <div style="color:#82a3b2">{html_escape(h2)}</div>
+          </div>
+       </div>
+       <div style="display:flex;align-items:center;gap:10px;margin-top:48px;
+                   background:linear-gradient(110deg,#fff 46%,#c3d4dc 75%,#144661);
+                   min-height:96px;border-radius:12px;overflow:hidden">
+          <div style="background:linear-gradient(135deg,#a34518,#e9ad8b);color:white;
+                      align-self:stretch;min-width:88px;display:flex;align-items:center;justify-content:center;
+                      font-size:30px;font-weight:800;border-radius:12px">{html_escape(badge)}</div>
+          <div style="flex:1;min-width:0;padding:12px 8px 12px 4px">
+             <div style="font-weight:800;color:#b64d1b;font-size:14px">{html_escape(document_type)}</div>
+             <div style="font-size:19px;font-weight:850;line-height:1.25;overflow-wrap:anywhere">
+                {html_escape(label+" "+heading)}
+             </div>
+          </div>
+       </div>
+       <div style="margin-top:20px;display:grid;grid-template-columns:8% 21% 15% 23% 33%;
+                   background:#0f4761;color:white;padding:8px 5px;font-size:10px;text-align:center;
+                   font-weight:700;border-radius:3px">
+          <span>No.</span><span>Word</span><span>Type</span><span>IPA</span><span>Meaning</span>
+       </div>
+       <div style="height:74px;background:repeating-linear-gradient(#fff 0px,#fff 25px,#e8eef1 25px,#e8eef1 26px);
+                   border-left:5px solid #bf4e14;border-right:1px solid #e8eef1"></div>
+       <div style="flex:1;min-height:45px"></div>
+       <div style="display:grid;grid-template-columns:1fr 36px 1fr;gap:8px;align-items:center;
+                   border-top:1px solid #e5ebef;padding-top:12px;font-size:11px">
+          <div style="color:#69899c;font-weight:700;overflow-wrap:anywhere">{html_escape(slogan)}</div>
+          <div style="width:30px;height:30px;border-radius:50%;
+                      background:linear-gradient(135deg,#9a451c,#dfaa93);color:white;
+                      display:flex;align-items:center;justify-content:center;font-weight:800">1</div>
+          <div style="text-align:right;font-weight:700;overflow-wrap:anywhere;font-size:10px">
+             {contact}
+          </div>
+       </div>
+    </div>"""
+
+
 def _ensure_defaults() -> None:
     defaults = {
         "source_mode": "Dán CSV / Clipboard",
@@ -1331,6 +1423,14 @@ def _ensure_defaults() -> None:
         "title": "SPECIAL DAYS",
         "filename": "VOCAB BUILDER UNIT 5.1 - SPECIAL DAYS.docx",
         "raw_data": "",
+        "studio_edit_title": "SPECIAL DAYS",
+        "studio_header_line1": "Supplementary Vocabulary",
+        "studio_header_line2": "for KET Learners in Orwell Classes",
+        "studio_slogan": "From Learners to Explorers",
+        "studio_phone": "0345286842",
+        "studio_email": "email@yourcenter.com",
+        "studio_show_phone": True,
+        "studio_show_email": True,
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
