@@ -11,9 +11,10 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import streamlit as st
+import pandas as pd
 from docx import Document
-from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
@@ -117,13 +118,13 @@ def parse_vocab_csv(
         row = list(row)
         while len(row) < 5:
             row.append("")
-        row = row[:5]
+        if len(row) > 5:
+            raise ValueError(f"Dòng CSV {source_index} có {len(row)} cột (cần 5). Dấu phẩy trong nghĩa cần đặt trong dấu ngoặc kép.")
 
         no, word, word_type, pronunciation, meaning = (c.strip() for c in row)
 
         if not word:
-            # The validator will catch meaningful malformed rows. Pure blank rows were removed above.
-            continue
+            raise ValueError(f"Dòng CSV {source_index} thiếu cột Word.")
 
         if no:
             current_family = VocabFamily(number=no)
@@ -294,9 +295,13 @@ def _set_single_run_paragraph(paragraph, text: str, style: TextStyle, *, align=N
 
 def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig) -> None:
     title = doc.tables[0]
+    # Preserve the original title artwork but allow rows to grow for long text.
+    for row in title.rows:
+        row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
 
     badge = title.rows[0].cells[0]
     badge.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_no_wrap(badge, False)
     _set_single_run_paragraph(
         badge.paragraphs[0], document.unit_badge, theme.badge,
         align=WD_ALIGN_PARAGRAPH.CENTER,
@@ -304,6 +309,7 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
 
     type_cell = title.rows[0].cells[2]
     type_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_no_wrap(type_cell, False)
     _set_single_run_paragraph(
         type_cell.paragraphs[0], document.document_type.upper(), theme.document_type,
         align=WD_ALIGN_PARAGRAPH.LEFT,
@@ -311,11 +317,65 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
 
     main = title.rows[1].cells[2]
     main.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_no_wrap(main, False)
     while len(main.paragraphs) > 1:
         p = main.paragraphs[-1]._element
         p.getparent().remove(p)
     heading = f"{document.section_label} {document.display_heading_unit}: {document.title.upper()}"
-    _set_single_run_paragraph(main.paragraphs[0], heading, theme.heading, align=WD_ALIGN_PARAGRAPH.LEFT)
+    heading_style = deepcopy(theme.heading)
+
+    # The source cell is 5.138in wide. Count *glyph widths*, not characters:
+    # the former len(heading)>46 rule let a 23-character heading wrap badly.
+    def width_units(value: str) -> float:
+        units = 0.0
+        for char in value.upper():
+            if char == " ":
+                units += .36
+            elif char in "I1|!:;,. ":
+                units += .33
+            elif char in "MW@":
+                units += .97
+            elif char in "JLTFR":
+                units += .62
+            else:
+                units += .72
+        return units
+
+    cell_width_pt = title.columns[2].width.pt if title.columns[2].width else 365.0
+    safe_width_pt = max(180.0, cell_width_pt - 22.0)
+    base_size = float(heading_style.size)
+    single_line_size = min(base_size, safe_width_pt / max(width_units(heading), 1.0))
+
+    if single_line_size >= 18.5:
+        # Prefer one line for ordinary titles, e.g. "UNIT 7: PEOPLE & PLACES".
+        heading_style.size = single_line_size * .97
+        heading_text = heading
+    else:
+        # Two balanced lines, staying inside the ORIGINAL artwork bounds.
+        words = heading.split()
+        best = None
+        for cut in range(2, len(words)):
+            left, right = " ".join(words[:cut]), " ".join(words[cut:])
+            balance = max(width_units(left), width_units(right))
+            candidate = (balance, left, right)
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+        if best is None:
+            raise ValueError("Tiêu đề quá dài để hiển thị trong template gốc.")
+        _, left, right = best
+        two_line_size = min(base_size, safe_width_pt / max(width_units(left), width_units(right), 1.0))
+        if two_line_size < 15.0:
+            raise ValueError(
+                "Tiêu đề quá dài cho vùng title gốc. Hãy rút ngắn để tránh tràn chữ."
+            )
+        heading_style.size = two_line_size * .96
+        heading_text = left + "\n" + right
+
+    _set_single_run_paragraph(
+        main.paragraphs[0], heading_text, heading_style,
+        align=WD_ALIGN_PARAGRAPH.LEFT,
+    )
+    main.paragraphs[0].paragraph_format.line_spacing = 1.06
 
 
 def _alignment(value: str):
@@ -613,10 +673,27 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             _set_cell_text_preserve_geometry(row.cells[2], item.word_type, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[3], item.pronunciation, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[4], item.meaning, style=table_theme.body_text)
+            # A paragraph longer than one page MUST be allowed to flow. Do not
+            # force Word to keep an enormous row in one piece.
+            if max(len(item.meaning), len(item.pronunciation), len(item.word)) > 900:
+                trpr = row._tr.get_or_add_trPr()
+                cant_split = trpr.find(qn("w:cantSplit"))
+                if cant_split is not None:
+                    trpr.remove(cant_split)
+                for c in row.cells:
+                    for p in c.paragraphs:
+                        p.paragraph_format.keep_together = False
             family_rows.append(row)
 
+        # Keep short word families together, but do not force a very large
+        # family onto one page (which can create excessive whitespace).
+        keep_group = len(family_rows) <= 4
         for i, row in enumerate(family_rows):
-            _set_family_keep_next(row, i < len(family_rows) - 1)
+            _set_family_keep_next(row, keep_group and i < len(family_rows) - 1)
+            if any(len(c.text) > 900 for c in row.cells):
+                for c in row.cells:
+                    for p in c.paragraphs:
+                        p.paragraph_format.keep_together = False
         if len(family_rows) > 1:
             merge_groups.append(family_rows)
 
@@ -691,7 +768,7 @@ def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) ->
     """Add a DrawingML gradient badge with a PAGE field inside its textbox."""
     size_pt = max(18.0, min(40.0, float(footer_theme.page_badge_size_pt)))
     size_emu = int(round(size_pt * 12700))
-    y_offset = -int(round(size_emu * 0.48))
+    y_offset = 0  # background aligned to the normal PAGE field
     base = _hex(footer_theme.page_fill, "BF4E14")
     style = footer_theme.page_text
     font = style.font
@@ -700,19 +777,13 @@ def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) ->
     bold_xml = "<w:b/><w:bCs/>" if style.bold else ""
     italic_xml = "<w:i/><w:iCs/>" if style.italic else ""
     rpr = f"""<w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:eastAsia="{font}" w:cs="{font}"/>{bold_xml}{italic_xml}<w:color w:val="{color}"/><w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/></w:rPr>"""
-    field_runs = f"""
-      <w:r>{rpr}<w:fldChar w:fldCharType="begin"/></w:r>
-      <w:r>{rpr}<w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>
-      <w:r>{rpr}<w:fldChar w:fldCharType="separate"/></w:r>
-      <w:r>{rpr}<w:t>1</w:t></w:r>
-      <w:r>{rpr}<w:fldChar w:fldCharType="end"/></w:r>"""
     xml = f"""
     <w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
         xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
         xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
       <wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0"
-          relativeHeight="251680768" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+          relativeHeight="251680768" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1">
         <wp:simplePos x="0" y="0"/>
         <wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH>
         <wp:positionV relativeFrom="paragraph"><wp:posOffset>{y_offset}</wp:posOffset></wp:positionV>
@@ -748,7 +819,6 @@ def _add_gradient_page_badge_background(paragraph, footer_theme: FooterTheme) ->
                 <w:txbxContent>
                   <w:p>
                     <w:pPr><w:spacing w:before="0" w:after="0"/><w:jc w:val="center"/></w:pPr>
-                    {field_runs}
                   </w:p>
                 </w:txbxContent>
               </wps:txbx>
@@ -772,62 +842,114 @@ def _add_page_badge(paragraph, footer_theme: FooterTheme) -> None:
     paragraph.paragraph_format.space_after = Pt(0)
     paragraph.paragraph_format.line_spacing = Pt(max(18.0, float(footer_theme.page_badge_size_pt)))
     _add_gradient_page_badge_background(paragraph, footer_theme)
+    # The editable PAGE field lives in the footer text, not a floating textbox.
+    for field_type, instruction, cached in (
+        ("begin", None, None),
+        (None, " PAGE ", None),
+        ("separate", None, None),
+        (None, None, "1"),
+        ("end", None, None),
+    ):
+        _append_page_field_run(
+            paragraph._p, footer_theme.page_text,
+            cached_text=cached, field_type=field_type, instruction=instruction,
+        )
 
 
 def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
+    """Edit original footer IN PLACE: preserve gradient art, tab stops and shapes.
+
+    The master DOCX already has a centered gradient badge, a native PAGE field,
+    carefully positioned contact drawings and a tab-aligned slogan. Rebuilding
+    that footer as a three-column table destroys its layout on some Word engines.
+    """
     section = doc.sections[0]
     footer = section.footer
-    _clear_footer(footer)
-    content_width = section.page_width - section.left_margin - section.right_margin
-    table = footer.add_table(rows=1, cols=3, width=content_width)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = False
-    # Balanced columns make the page badge mathematically centered in the text area.
-    left_w = Inches(3.0)
-    center_w = Inches(0.78)
-    right_w = content_width - left_w - center_w
-    widths = [left_w, center_w, right_w]
-    for i, width in enumerate(widths):
-        table.columns[i].width = width
-        table.cell(0, i).width = width
-    _set_table_no_borders(table)
 
-    left = table.cell(0, 0)
-    left.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    p = left.paragraphs[0]
-    p.alignment = _alignment(footer_theme.slogan_align)
-    p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after = Pt(0)
-    items = [s for s in footer_theme.slogan_segments if s.text.strip()]
-    for i, segment in enumerate(items):
-        text = segment.text.strip() + (" " if i < len(items) - 1 else "")
-        r = p.add_run(text)
-        _apply_run_style(r, segment.style)
+    # Master template's Footer style uses tabs at 3.25 / 6.5 inches, while its
+    # content area is 6.768 inches. That puts PAGE ~10pt LEFT of the badge.
+    # Preserve the original anchored badge, but correct tab stops to the exact
+    # center and right text margins on A4 (and other page sizes).
+    usable_width = section.page_width - section.left_margin - section.right_margin
+    stops = doc.styles["Footer"].paragraph_format.tab_stops
+    stops.clear_all()
+    stops.add_tab_stop(int(usable_width / 2), WD_TAB_ALIGNMENT.CENTER)
+    stops.add_tab_stop(int(usable_width), WD_TAB_ALIGNMENT.RIGHT)
 
-    center = table.cell(0, 1)
-    center.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    _add_page_badge(center.paragraphs[0], footer_theme)
+    original = next(
+        (p for p in footer.paragraphs if any(run.text == "\t" for run in p.runs)),
+        None,
+    )
+    if original is None:
+        raise RuntimeError("Template footer gốc không có đoạn slogan/tab/số trang.")
+    if not any("PAGE" in (node.text or "").upper()
+               for node in original._p.xpath(".//w:instrText")):
+        raise RuntimeError("Template footer gốc không có PAGE field; không thể giữ layout chính xác.")
 
-    right = table.cell(0, 2)
-    right.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    p1 = right.paragraphs[0]
-    p1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    p1.paragraph_format.space_before = Pt(0)
-    p1.paragraph_format.space_after = Pt(0)
-    r = p1.add_run(f"{footer_theme.phone_symbol} {footer_theme.phone}".strip())
-    _apply_run_style(r, TextStyle(footer_theme.contact_font, footer_theme.contact_size, footer_theme.phone_color, footer_theme.contact_bold))
-    p2 = right.add_paragraph()
-    p2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    p2.paragraph_format.space_before = Pt(0)
-    p2.paragraph_format.space_after = Pt(0)
-    r = p2.add_run(f"{footer_theme.email_symbol} {footer_theme.email}".strip())
-    _apply_run_style(r, TextStyle(footer_theme.contact_font, footer_theme.contact_size, footer_theme.email_color, footer_theme.contact_bold))
+    # Replace only plain text in the four existing slogan runs. Their individual
+    # Orbitron/Arial formatting and tab stops are part of the original design.
+    slogan_runs = []
+    for run in original.runs:
+        if "\t" in run.text:
+            break
+        if run.text:
+            slogan_runs.append(run)
+    segments = [seg for seg in footer_theme.slogan_segments if seg.text.strip()]
+    for index, run in enumerate(slogan_runs):
+        if index < len(segments):
+            tail = " " if index < len(segments) - 1 else ""
+            run.text = segments[index].text.strip() + tail
+            _apply_run_style(run, segments[index].style)
+        else:
+            run.text = ""
+    if len(segments) > len(slogan_runs) and slogan_runs:
+        remaining = " ".join(seg.text.strip() for seg in segments[len(slogan_runs):])
+        slogan_runs[-1].text = slogan_runs[-1].text.rstrip() + " " + remaining
+    # Never overwrite tabs or field runs. The original PAGE field auto-updates.
 
-    # Word requires a paragraph after a table in a header/footer; make it visually negligible.
-    tail = footer.add_paragraph()
-    tail.paragraph_format.space_before = Pt(0)
-    tail.paragraph_format.space_after = Pt(0)
-    tail.paragraph_format.line_spacing = Pt(1)
+    # The original phone is an ordinary right-aligned run. Keep the artwork
+    # around it rather than replacing the whole footer paragraph.
+    plain_runs = [r for r in original.runs if r.text.strip()]
+    for run in reversed(plain_runs):
+        if re.fullmatch(r"[\d+()\s-]{6,}", run.text.strip()):
+            run.text = (footer_theme.phone_symbol + " " + footer_theme.phone).strip()
+            _apply_run_style(
+                run, TextStyle(
+                    footer_theme.contact_font, footer_theme.contact_size,
+                    footer_theme.phone_color, footer_theme.contact_bold,
+                )
+            )
+            break
+
+    # Email is a textbox in the original master; edit its text node without
+    # touching DrawingML/VML position, dimensions, color or its contact icon.
+    found_email = False
+    for node in footer._element.xpath(".//w:t"):
+        old = node.text or ""
+        if re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", old):
+            node.text = re.sub(
+                r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+                footer_theme.email.strip(), old,
+            )
+            found_email = True
+
+    if footer_theme.email.strip() and not found_email:
+        # The original master has a right-aligned phone but no email run.
+        # Add email immediately below it without touching background artwork.
+        p_email = footer.add_paragraph(style="Footer")
+        p_email.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p_email.paragraph_format.space_before = Pt(0)
+        p_email.paragraph_format.space_after = Pt(0)
+        p_email.paragraph_format.line_spacing = 1.0
+        email_run = p_email.add_run(
+            (footer_theme.email_symbol + " " + footer_theme.email).strip()
+        )
+        _apply_run_style(
+            email_run, TextStyle(
+                footer_theme.contact_font, footer_theme.contact_size,
+                footer_theme.email_color, footer_theme.contact_bold,
+            )
+        )
 
 
 def render_vocab_docx(
@@ -843,6 +965,13 @@ def render_vocab_docx(
     _set_title_block(doc, document, theme)
     _populate_vocab_table(doc, document, theme.table)
     _set_footer(doc, theme.footer)
+    # Request PAGE field refresh when Microsoft Word opens the document.
+    settings = doc.settings.element
+    update = settings.find(qn("w:updateFields"))
+    if update is None:
+        update = OxmlElement("w:updateFields")
+        settings.append(update)
+    update.set(qn("w:val"), "true")
 
     output = io.BytesIO()
     doc.save(output)
@@ -1050,7 +1179,27 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
         "heading_unit": "",
         "title": "",
     }
-    if title_text:
+
+    # The ORIGINAL branded template stores title text in table cells, not in
+    # doc.paragraphs. Reading these cells enables lossless re-import of app exports.
+    if doc.tables and len(doc.tables[0].rows) >= 2:
+        title_table = doc.tables[0]
+        try:
+            badge = _clean_cell_text(title_table.rows[0].cells[0].text)
+            doctype = _clean_cell_text(title_table.rows[0].cells[2].text)
+            heading = _clean_cell_text(title_table.rows[1].cells[2].text)
+            match = re.match(r"^(UNIT|MODULE)\s+([A-Za-z0-9._-]+)\s*[:-]\s*(.+)$", heading, re.IGNORECASE)
+            if match:
+                metadata["section_label"] = match.group(1).upper()
+                metadata["heading_unit"] = match.group(2)
+                metadata["unit"] = badge or metadata["heading_unit"]
+                metadata["title"] = match.group(3).strip()
+                if doctype:
+                    metadata["document_type"] = doctype.upper()
+        except (IndexError, AttributeError):
+            pass
+
+    if not metadata["title"]:
         match = TITLE_RE.search(title_text)
         if match:
             metadata["document_type"] = " ".join(match.group("doctype").upper().split())
@@ -1058,10 +1207,10 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
             metadata["unit"] = match.group("unit").strip()
             metadata["heading_unit"] = metadata["unit"].split(".", 1)[0]
             metadata["title"] = match.group("title").strip()
-        else:
+        elif title_text:
             notes.append(f"Đọc được title nhưng chưa tách tự động hoàn toàn: {title_text}")
-    else:
-        notes.append("Không tìm thấy dòng title VOCAB BUILDER; hãy nhập metadata thủ công.")
+        else:
+            notes.append("Không đọc được title; hãy kiểm tra metadata trước khi xuất.")
 
     table = _find_vocab_table(doc)
     if table is None:
@@ -1087,7 +1236,11 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
         # python-docx often returns the merged No. value on every merged row.
         # Consecutive repeats therefore become blank continuation rows.
         out_no = no
-        if no and previous_no == no:
+        first_tc = row._tr.tc_lst[0]
+        tcpr = first_tc.tcPr
+        vmerge = tcpr.find(qn("w:vMerge")) if tcpr is not None else None
+        is_merged_continuation = vmerge is not None and vmerge.get(qn("w:val")) != "restart"
+        if no and previous_no == no and is_merged_continuation:
             out_no = ""
         elif no:
             previous_no = no
@@ -1100,6 +1253,53 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
 
     notes.append(f"Đã trích {family_count} word families / {row_count} vocabulary rows từ file cũ.")
     return metadata, out.getvalue(), notes
+
+
+# ===================== EDITOR HELPERS =====================
+EDITOR_COLUMNS = ["No.", "Word", "Type", "Pronunciation", "Meaning"]
+
+
+def csv_to_editor_dataframe(raw_data: str) -> pd.DataFrame:
+    """Create a faithful, editable five-column view of the source CSV."""
+    rows = list(csv.reader(io.StringIO(raw_data or "")))
+    rows = [row for row in rows if row and any(value.strip() for value in row)]
+    if rows and _looks_like_header(rows[0]):
+        rows = rows[1:]
+    records = []
+    for i, row in enumerate(rows, start=1):
+        if len(row) > 5:
+            raise ValueError(f"Dòng CSV {i}: quá 5 cột. Hãy đặt các nghĩa có dấu phẩy trong dấu ngoặc kép.")
+        records.append(dict(zip(EDITOR_COLUMNS, (list(row) + [""] * 5)[:5])))
+    return pd.DataFrame.from_records(records, columns=EDITOR_COLUMNS).fillna("")
+
+
+def editor_dataframe_to_csv(df: pd.DataFrame) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(EDITOR_COLUMNS)
+    for values in df[EDITOR_COLUMNS].fillna("").itertuples(index=False, name=None):
+        cells = [str(value).strip() for value in values]
+        if any(cells):
+            writer.writerow(cells)
+    return output.getvalue()
+
+
+def _apply_vocabulary_draft() -> None:
+    st.session_state["raw_data"] = st.session_state.get("_editor_draft_csv", "")
+    st.session_state["_editor_base_hash"] = hashlib.sha1(
+        st.session_state["raw_data"].encode("utf-8")
+    ).hexdigest()
+    st.session_state["_editor_frame"] = csv_to_editor_dataframe(st.session_state["raw_data"])
+    st.session_state.pop("vocab_table_widget", None)
+
+
+def active_editor_csv() -> str:
+    """Keep unsaved data-editor changes available to Generate immediately."""
+    original = st.session_state.get("raw_data", "")
+    original_hash = hashlib.sha1(original.encode("utf-8")).hexdigest()
+    if st.session_state.get("_editor_base_hash") == original_hash:
+        return st.session_state.get("_editor_draft_csv", original)
+    return original
 
 
 # ===================== STREAMLIT UI =====================
@@ -1152,18 +1352,34 @@ _ensure_defaults()
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1320px;}
-    [data-testid="stSidebar"] {background: #F7F9FA;}
-    .lx-title {font-size: 2rem; font-weight: 800; margin-bottom: .1rem;}
-    .lx-sub {color:#52636c; margin-bottom: 1rem;}
-    .lx-chip {display:inline-block; padding:.25rem .55rem; border-radius:999px;
-              background:#eef4f7; margin-right:.35rem; font-size:.85rem;}
+    .block-container {padding-top: 1.4rem; padding-bottom: 2.5rem; max-width: 1430px;}
+    [data-testid="stSidebar"] {background: #f6f8fa; border-right: 1px solid #e3e9ed;}
+    [data-testid="stSidebar"] h3 {font-weight: 760; color: #16384c;}
+    div[data-testid="stMetric"] {background: #f6f9fb; border: 1px solid #e4ebef;
+       border-radius: 14px; padding: 12px 18px;}
+    div[data-testid="stMetric"] label {color: #527083;}
+    div[data-testid="stTabs"] button[aria-selected="true"] {color: #b95725;}
+    .lx-hero {background: linear-gradient(125deg,#10364c,#1a5266);
+       color: white; border-radius: 20px; padding: 26px 32px;
+       margin-bottom: 18px; box-shadow: 0 10px 32px rgba(21,61,81,.12);}
+    .lx-hero .eyebrow {font-weight: 750; font-size: .76rem; color: #ffc3a4;
+       letter-spacing: .17em; margin-bottom: 6px;}
+    .lx-hero h1 {font-size: 2rem; font-weight: 790; line-height: 1.2;
+       color: #fff; margin: 0 0 6px;}
+    .lx-hero p {color: #d9e9f0; font-size: .96rem; margin: 0;}
+    .lx-note {border-left: 3px solid #bf4e14; background:#faf6f2;
+       padding: 10px 14px; border-radius: 4px 10px 10px 4px;
+       margin: 12px 0; color:#654334;}
     </style>
-    <div class="lx-title">LingualXplore · VOCAB Builder V4.1</div>
-    <div class="lx-sub">Tạo mới · chuyển 1 file hoặc hàng loạt DOCX cũ → theme mới · Header/Footer linh hoạt · bảng liền mạch.</div>
+    <div class="lx-hero">
+        <div class="eyebrow">LINGUALXPLORE • DOCUMENT STUDIO</div>
+        <h1>VOCAB Builder <span style="color:#f4ad83">Studio</span></h1>
+        <p>Một template gốc duy nhất • Soạn thảo trực quan • Xuất Word đúng nhận diện của bạn</p>
+    </div>
     """,
     unsafe_allow_html=True,
 )
+
 
 # -------------------- SOURCE / IMPORT FIRST (before widgets bound to metadata keys) --------------------
 with st.sidebar:
@@ -1224,13 +1440,23 @@ with st.sidebar:
     if st.session_state.get("_import_error") and source_mode == "Chuyển 1 file Word cũ":
         st.error(st.session_state["_import_error"])
 
-# -------------------- TABS --------------------
+# -------------------- STUDIO TABS --------------------
 tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
-    ["📥 Dữ liệu", "🎨 Header & Title", "🧩 Bảng", "🦶 Footer", "✅ Xuất file"]
+    ["01 · Soạn từ vựng", "02 · Header / Title", "03 · Bảng", "04 · Footer", "05 · Xuất Word"]
 )
+st.caption("Template gốc được giữ nguyên. Bạn chỉ cần dùng tab Soạn từ vựng và Xuất Word; các tab còn lại dành cho chỉnh sâu.")
 
+quick_generate = False
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
+    preview_image = BASE_DIR / "assets" / "lingualxplore-template-preview.png"
+    if preview_image.is_file():
+        with st.expander("Xem minh họa mẫu Word LingualXplore gốc", expanded=False):
+            st.image(
+                str(preview_image), width=560,
+                caption="Ảnh xem mẫu từ DOCX gốc được kết xuất trên LibreOffice. "
+                        "Microsoft Word có thể hiển thị font hơi khác tùy máy.",
+            )
     if source_mode == "Chuyển hàng loạt Word cũ":
         st.info("Batch mode: app sẽ đọc từng DOCX, lấy metadata + bảng vocabulary, rồi đóng gói toàn bộ file mới vào một ZIP.")
         if uploaded_batch:
@@ -1253,9 +1479,45 @@ with tab_data:
             key="raw_data",
             placeholder='No.,Word,Type,Pronunciation,Meaning\n1,special,"adj, n",,\n,specially,adv,,',
         )
+        st.markdown("#### Bảng chỉnh sửa trực tiếp")
+        st.caption("Sửa ngay trong từng ô. Nhấn Áp dụng để đồng bộ bảng với CSV trước khi xuất. Cột No. để trống = cùng word family.")
+        try:
+            source_hash = hashlib.sha1(st.session_state.raw_data.encode("utf-8")).hexdigest()
+            if st.session_state.get("_editor_base_hash") != source_hash:
+                st.session_state["_editor_base_hash"] = source_hash
+                st.session_state["_editor_draft_csv"] = st.session_state.raw_data
+                st.session_state["_editor_frame"] = csv_to_editor_dataframe(st.session_state.raw_data)
+                st.session_state.pop("vocab_table_widget", None)
+            editable = st.data_editor(
+                st.session_state["_editor_frame"],
+                key="vocab_table_widget",
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "No.": st.column_config.TextColumn("No.", width="small"),
+                    "Word": st.column_config.TextColumn("Word", width="medium"),
+                    "Type": st.column_config.TextColumn("Type", width="small"),
+                    "Pronunciation": st.column_config.TextColumn("Pronunciation", width="medium"),
+                    "Meaning": st.column_config.TextColumn("Meaning", width="large"),
+                },
+            )
+            draft = editor_dataframe_to_csv(editable)
+            st.session_state["_editor_draft_csv"] = draft
+            col_apply, col_reset = st.columns([1, 1])
+            col_apply.button(
+                "Áp dụng chỉnh sửa", type="primary", use_container_width=True,
+                on_click=_apply_vocabulary_draft,
+            )
+            if col_reset.button("Hoàn tác về CSV", use_container_width=True):
+                st.session_state["_editor_base_hash"] = ""
+                st.rerun()
+        except ValueError as editor_error:
+            st.error(f"Không thể mở bảng chỉnh sửa: {editor_error}")
+
         try:
             preview_doc = parse_vocab_csv(
-                raw_data,
+                active_editor_csv(),
                 unit=st.session_state.unit,
                 heading_unit=st.session_state.heading_unit,
                 title=st.session_state.title,
@@ -1267,6 +1529,41 @@ with tab_data:
             c2.metric("Vocabulary rows", preview_doc.word_count)
         except Exception:
             pass
+
+    if source_mode != "Chuyển hàng loạt Word cũ":
+        st.markdown("#### Xuất nhanh")
+        st.caption("Định dạng Word mặc định luôn giữ template LingualXplore gốc.")
+        quick_generate = st.button(
+            "Tạo Word từ danh sách hiện tại",
+            type="primary", use_container_width=True, key="studio_quick_generate",
+        )
+        if quick_generate:
+            try:
+                draft_doc = parse_vocab_csv(
+                    active_editor_csv(),
+                    unit=st.session_state.unit,
+                    heading_unit=st.session_state.heading_unit,
+                    title=st.session_state.title,
+                    section_label=st.session_state.section_label,
+                    document_type=st.session_state.document_type,
+                )
+                errors = [m.message for m in validate_vocab(draft_doc) if m.level == "error"]
+                if errors:
+                    for message in errors:
+                        st.error(message)
+                    quick_generate = False
+            except Exception as exc:
+                st.error(f"Dữ liệu chưa hợp lệ: {exc}")
+                quick_generate = False
+        if st.session_state.get("_last_export_bytes"):
+            st.download_button(
+                "Tải Word vừa tạo",
+                data=st.session_state["_last_export_bytes"],
+                file_name=st.session_state.get("_last_export_name","VOCAB_BUILDER.docx"),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True, key="studio_quick_download",
+            )
+
 
 # -------------------- HEADER + TITLE --------------------
 HEADER_DEFAULTS = [
@@ -1454,7 +1751,7 @@ with tab_export:
         help="Batch QA sẽ chậm hơn vì app phải đọc lại từng DOCX vừa sinh." if is_batch else None,
     )
     button_label = "TẠO ZIP HÀNG LOẠT" if is_batch else "TẠO FILE WORD"
-    generate = st.button(button_label, type="primary", use_container_width=True)
+    generate = st.button(button_label, type="primary", use_container_width=True) or quick_generate
 
     if generate:
         if not TEMPLATE_PATH.exists():
@@ -1609,7 +1906,7 @@ with tab_export:
                 filename += ".docx"
 
             document = parse_vocab_csv(
-                st.session_state.raw_data,
+                active_editor_csv(),
                 unit=st.session_state.unit,
                 heading_unit=st.session_state.heading_unit,
                 title=st.session_state.title,
@@ -1647,6 +1944,10 @@ with tab_export:
                 finally:
                     tmp_path.unlink(missing_ok=True)
 
+            st.session_state["_last_export_bytes"] = output.getvalue()
+            st.session_state["_last_export_name"] = filename
+            if quick_generate:
+                st.rerun()  # Show download beside the editor in the same workflow.
             st.download_button(
                 "TẢI FILE WORD",
                 output.getvalue(),
@@ -1655,3 +1956,17 @@ with tab_export:
                 type="primary",
                 use_container_width=True,
             )
+
+
+# Export remains downloadable after a Streamlit rerun (editing controls, QA expansion).
+if st.session_state.get("_last_export_bytes"):
+    st.divider()
+    st.markdown("### File Word đã tạo gần nhất")
+    st.caption("Bạn có thể tải lại mà không cần tạo lại file. Nếu đã chỉnh sửa nội dung, hãy nhấn TẠO FILE WORD lần nữa để cập nhật.")
+    st.download_button(
+        "Tải lại DOCX gần nhất",
+        st.session_state["_last_export_bytes"],
+        file_name=st.session_state.get("_last_export_name", "VOCAB_BUILDER.docx"),
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True,
+    )
