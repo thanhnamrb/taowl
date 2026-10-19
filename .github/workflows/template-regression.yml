@@ -25,3 +25,18 @@ jobs:
 
       - name: Inspect original DOCX layout
         run: python tools/layout_diagnostics.py
+
+      - name: Install PDF render dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libreoffice-writer >/dev/null
+          python -m pip install pymupdf
+      - name: Render and inspect original template pages
+        run: python tools/render_qa.py
+      - name: Upload visual QA preview
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taowl-template-visual-qa
+          path: qa_output/
+          retention-days: 14
