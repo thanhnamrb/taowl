@@ -1177,6 +1177,14 @@ def editor_dataframe_to_csv(df: pd.DataFrame) -> str:
     return output.getvalue()
 
 
+def _apply_vocabulary_draft() -> None:
+    st.session_state["raw_data"] = st.session_state.get("_editor_draft_csv", "")
+    st.session_state["_editor_base_hash"] = hashlib.sha1(
+        st.session_state["raw_data"].encode("utf-8")
+    ).hexdigest()
+    st.session_state.pop("vocab_table_widget", None)
+
+
 def active_editor_csv() -> str:
     """Keep unsaved data-editor changes available to Generate immediately."""
     original = st.session_state.get("raw_data", "")
@@ -1380,11 +1388,10 @@ with tab_data:
             draft = editor_dataframe_to_csv(editable)
             st.session_state["_editor_draft_csv"] = draft
             col_apply, col_reset = st.columns([1, 1])
-            if col_apply.button("Áp dụng chỉnh sửa", type="primary", use_container_width=True):
-                st.session_state["raw_data"] = draft
-                st.session_state["_editor_base_hash"] = hashlib.sha1(draft.encode("utf-8")).hexdigest()
-                st.session_state["_editor_frame"] = editable.copy()
-                st.success("Đã cập nhật nội dung tài liệu.")
+            col_apply.button(
+                "Áp dụng chỉnh sửa", type="primary", use_container_width=True,
+                on_click=_apply_vocabulary_draft,
+            )
             if col_reset.button("Hoàn tác về CSV", use_container_width=True):
                 st.session_state["_editor_base_hash"] = ""
                 st.rerun()
