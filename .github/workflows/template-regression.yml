@@ -4,10 +4,11 @@ on:
   pull_request:
   push:
     branches:
+      - main
       - feat/visual-header-footer-continuous-table
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   docx-tests:
