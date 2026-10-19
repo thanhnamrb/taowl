@@ -12,5 +12,20 @@ class StudioSmokeTests(unittest.TestCase):
         self.assertEqual(errors, [], "Streamlit startup errors: " + " | ".join(errors))
         self.assertGreaterEqual(len(at.tabs), 2)
 
+    def test_quick_generate_export_button(self):
+        at=AppTest.from_file(str(APP), default_timeout=30)
+        at.session_state["raw_data"]=(
+            "No.,Word,Type,Pronunciation,Meaning\n"
+            "1,protect,v,/prəˈtekt/,bảo vệ\n"
+            ",protection,n,/prəˈtekʃn/,sự bảo vệ\n"
+        )
+        at.run()
+        self.assertEqual(len(at.exception),0)
+        buttons=[button for button in at.button if button.key=="studio_quick_generate"]
+        self.assertEqual(len(buttons),1)
+        buttons[0].click().run()
+        self.assertEqual(len(at.exception),0)
+        self.assertTrue(at.session_state["_last_export_bytes"])
+
 if __name__ == "__main__":
     unittest.main()
