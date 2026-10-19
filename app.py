@@ -1431,6 +1431,14 @@ st.caption("Template gốc được giữ nguyên. Bạn chỉ cần dùng tab S
 
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
+    preview_image = BASE_DIR / "assets" / "lingualxplore-template-preview.png"
+    if preview_image.is_file():
+        with st.expander("Xem minh họa mẫu Word LingualXplore gốc", expanded=False):
+            st.image(
+                str(preview_image), width=560,
+                caption="Ảnh xem mẫu từ DOCX gốc được kết xuất trên LibreOffice. "
+                        "Microsoft Word có thể hiển thị font hơi khác tùy máy.",
+            )
     if source_mode == "Chuyển hàng loạt Word cũ":
         st.info("Batch mode: app sẽ đọc từng DOCX, lấy metadata + bảng vocabulary, rồi đóng gói toàn bộ file mới vào một ZIP.")
         if uploaded_batch:
