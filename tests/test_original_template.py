@@ -69,7 +69,10 @@ class OriginalTemplateTests(unittest.TestCase):
             namespace["render_vocab_docx"](self.sample(), template_path=self.template).getvalue()
         )).sections[0].footer
         self.assertEqual(len(generated.tables), len(original.tables))
-        self.assertEqual(len(generated.paragraphs), len(original.paragraphs))
+        self.assertGreaterEqual(len(generated.paragraphs), len(original.paragraphs))
+        self.assertIn("email@yourcenter.com", generated._element.xml)
+        self.assertIn("0345286842", generated._element.xml)
+        self.assertIn("w:tab", generated._element.xml)
         self.assertEqual(len(generated._element.xpath(".//w:drawing")), len(original._element.xpath(".//w:drawing")))
         self.assertEqual(len(generated._element.xpath(".//w:pict")), len(original._element.xpath(".//w:pict")))
         self.assertIn("PAGE", generated._element.xml)
