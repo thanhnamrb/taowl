@@ -22,3 +22,6 @@ jobs:
         run: python -m py_compile app.py
       - name: Test original LingualXplore template
         run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Inspect original DOCX layout
+        run: python tools/layout_diagnostics.py
