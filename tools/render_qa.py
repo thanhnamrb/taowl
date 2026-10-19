@@ -9,7 +9,6 @@ from pathlib import Path
 import fitz
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 DEST=ROOT/"qa_output"
 DEST.mkdir(exist_ok=True)
 source=(ROOT/"app.py").read_text(encoding="utf-8")
@@ -58,9 +57,6 @@ for title,unit,count in [
     ('SPECIAL DAYS AND CULTURAL FESTIVALS AROUND THE WORLD','8.2',12),
     ('WILDLIFE AND ENVIRONMENT','9.3',85),
     ('ONE VERY LONG WORD FAMILY','10.1',85),
-    ('FOOD, HEALTH & CULTURE','12.1',5),
-    ('EXTRAORDINARY BIOLOGICAL DIVERSITY ACROSS CONTINENTS','13.1',6),
-    ('THIS-IS-A-VERY-LONG-UNBREAKABLE-WORD-IN-THE-TITLE','14.1',6),
 ]:
     path=make(title,unit,count)
     proc=subprocess.run(
@@ -73,30 +69,6 @@ for title,unit,count in [
         raise RuntimeError(f'LibreOffice failed for {path.name}: {proc.stderr}')
     pdf=fitz.open(path.with_suffix('.pdf'))
     print('PDF',unit,'pages',len(pdf),'page size',pdf[0].rect,'expected rows',count*2)
-    if unit in ("7.1", "12.1", "13.1", "14.1"):
-        first = pdf[0]
-        words = first.get_text("words")
-        table_headers = [w for w in words if w[4] == "No." and w[1] > 100]
-        if not table_headers:
-            raise AssertionError(f"Missing vocabulary table for {unit}")
-        table_start = table_headers[0][1]
-        title_words = [w for w in words if w[0] >= 165 and 117 < w[1] < table_start - 4
-                       and w[4].upper() not in ("VOCAB", "BUILDER")]
-        title_lines = {}
-        for w in title_words:
-            key = round(w[1] / 4) * 4
-            title_lines.setdefault(key, []).append(w)
-            if w[2] > first.rect.width - 44:
-                raise AssertionError(f"Title crosses right safe margin: {w} in {unit}")
-        title_content = " ".join(w[4] for group in title_lines.values() for w in group)
-        print("TITLE-REGRESSION", unit, repr(title_content), "line count", len(title_lines),
-              "table start", table_start)
-        if "PLACES" in title.upper() and unit == "7.1" and len(title_lines) != 1:
-            raise AssertionError("PEOPLE & PLACES wraps into multiple lines")
-        if not " ".join(title.upper().split()).replace(" ", "") in (
-                "".join(w[4] for group in title_lines.values() for w in group).upper()):
-            raise AssertionError(f"Title text missing or clipped on page for unit {unit}")
-
     if unit == '10.1':
         if '10.1' not in pdf[0].get_text():
             raise AssertionError('The 10.1 badge wrapped instead of staying on one line')

@@ -23,8 +23,6 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 from lxml import etree
 
-from title_fitter import fit_title
-
 # ===================== DATA MODEL =====================
 @dataclass(slots=True)
 class VocabWord:
@@ -335,37 +333,58 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
     heading = f"{document.section_label} {document.display_heading_unit}: {document.title.upper()}"
     heading_style = deepcopy(theme.heading)
 
-    # Freeze the original table grid so Word cannot unpredictably resize the
-    # title cell when a font or heading changes.
-    title.autofit = False
-    tblpr = title._tbl.tblPr
-    layout = tblpr.find(qn("w:tblLayout"))
-    if layout is None:
-        layout = OxmlElement("w:tblLayout")
-        tblpr.append(layout)
-    layout.set(qn("w:type"), "fixed")
+    # The source cell is 5.138in wide. Count *glyph widths*, not characters:
+    # the former len(heading)>46 rule let a 23-character heading wrap badly.
+    def width_units(value: str) -> float:
+        units = 0.0
+        for char in value.upper():
+            if char == " ":
+                units += .36
+            elif char in "I1|!:;,. ":
+                units += .33
+            elif char in "MW@":
+                units += .97
+            elif char in "JLTFR":
+                units += .62
+            else:
+                units += .72
+        return units
 
-    # Measure against the exact original 5.138-inch grid column, not a guessed
-    # character count. DejaVu Sans Bold is a conservative cross-platform proxy
-    # for Montserrat Bold (especially when Word substitutes the latter).
-    original_cell_width = title.columns[2].width
-    if original_cell_width is None:
-        raise RuntimeError("Original LingualXplore title column has no fixed width.")
-    fitted = fit_title(
-        heading,
-        cell_width_pt=original_cell_width.pt,
-        preferred_size=float(heading_style.size),
-    )
-    heading_style.size = fitted.font_size
-    # Explicit breaks are the only allowed breaks: Word must not wrap a short
-    # second fragment like PLACES onto an unexpected third line.
-    _set_cell_no_wrap(main, True)
+    cell_width_pt = title.columns[2].width.pt if title.columns[2].width else 365.0
+    safe_width_pt = max(180.0, cell_width_pt - 22.0)
+    base_size = float(heading_style.size)
+    single_line_size = min(base_size, safe_width_pt / max(width_units(heading), 1.0))
+
+    if single_line_size >= 18.5:
+        # Prefer one line for ordinary titles, e.g. "UNIT 7: PEOPLE & PLACES".
+        heading_style.size = single_line_size * .97
+        heading_text = heading
+    else:
+        # Two balanced lines, staying inside the ORIGINAL artwork bounds.
+        words = heading.split()
+        best = None
+        for cut in range(2, len(words)):
+            left, right = " ".join(words[:cut]), " ".join(words[cut:])
+            balance = max(width_units(left), width_units(right))
+            candidate = (balance, left, right)
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+        if best is None:
+            raise ValueError("Tiêu đề quá dài để hiển thị trong template gốc.")
+        _, left, right = best
+        two_line_size = min(base_size, safe_width_pt / max(width_units(left), width_units(right), 1.0))
+        if two_line_size < 15.0:
+            raise ValueError(
+                "Tiêu đề quá dài cho vùng title gốc. Hãy rút ngắn để tránh tràn chữ."
+            )
+        heading_style.size = two_line_size * .96
+        heading_text = left + "\n" + right
+
     _set_single_run_paragraph(
-        main.paragraphs[0], fitted.text, heading_style,
+        main.paragraphs[0], heading_text, heading_style,
         align=WD_ALIGN_PARAGRAPH.LEFT,
     )
-    main.paragraphs[0].paragraph_format.line_spacing = 1.04
-    main.paragraphs[0].paragraph_format.keep_together = True
+    main.paragraphs[0].paragraph_format.line_spacing = 1.06
 
 
 def _alignment(value: str):
@@ -1188,7 +1207,7 @@ def extract_old_vocab_docx(data: bytes) -> tuple[dict, str, list[str]]:
         try:
             badge = _clean_cell_text(title_table.rows[0].cells[0].text)
             doctype = _clean_cell_text(title_table.rows[0].cells[2].text)
-            heading = " ".join(_clean_cell_text(title_table.rows[1].cells[2].text).split())
+            heading = _clean_cell_text(title_table.rows[1].cells[2].text)
             match = re.match(r"^(UNIT|MODULE)\s+([A-Za-z0-9._-]+)\s*[:-]\s*(.+)$", heading, re.IGNORECASE)
             if match:
                 metadata["section_label"] = match.group(1).upper()
@@ -1380,12 +1399,6 @@ def _studio_page_html(*, label: str, heading: str, document_type: str, badge: st
         contact += '<div style="color:#cd885f">☎ ' + html_escape(phone) + '</div>'
     if show_email and email.strip():
         contact += '<div style="color:#7795a6">✉ ' + html_escape(email) + '</div>'
-    # Preview and DOCX now share the same deliberate line breaks.
-    preview_heading = fit_title(
-        label + " " + heading, cell_width_pt=5.138 * 72, preferred_size=27.0,
-    )
-    heading_lines_html = "<br>".join(html_escape(line) for line in preview_heading.lines)
-    scaled_heading_px = max(12.0, 19.0 * preview_heading.font_size / 27.0)
     return f"""
     <div style="background:white;border:1px solid #dde4e8;border-radius:14px;
                 box-shadow:0 12px 28px #16394e18;padding:22px;min-height:410px;
@@ -1405,8 +1418,8 @@ def _studio_page_html(*, label: str, heading: str, document_type: str, badge: st
                       font-size:30px;font-weight:800;border-radius:12px">{html_escape(badge)}</div>
           <div style="flex:1;min-width:0;padding:12px 8px 12px 4px">
              <div style="font-weight:800;color:#b64d1b;font-size:14px">{html_escape(document_type)}</div>
-             <div style="font-size:{scaled_heading_px:.1f}px;font-weight:850;line-height:1.25;overflow-wrap:normal">
-                {heading_lines_html}
+             <div style="font-size:19px;font-weight:850;line-height:1.25;overflow-wrap:anywhere">
+                {html_escape(label+" "+heading)}
              </div>
           </div>
        </div>
