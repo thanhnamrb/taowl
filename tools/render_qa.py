@@ -24,6 +24,23 @@ def make(title: str, unit: str, count: int) -> str:
     for i in range(1,count+1):
         rows.append(f'{i},vocabulary{i},n,/vəˈkæbjələri/,"Nghĩa tiếng Việt và phần giải thích dài số {i}"')
         rows.append(f',vocabulary{i}ly,adv,/ˈvɒkjʊ/,"Một cách tự nhiên, rõ ràng và phù hợp với ví dụ {i}"')
+    if unit == "5.1":
+        # Use pedagogically realistic content for the screenshot shown in-app.
+        rows = [
+            "No.,Word,Type,Pronunciation,Meaning",
+            "1,impress,v,/ɪmˈpres/,gây ấn tượng",
+            ",impressive,adj,/ɪmˈpresɪv/,ấn tượng; nổi bật",
+            "2,design,v,/dɪˈzaɪn/,thiết kế",
+            ",designer,n,/dɪˈzaɪnə(r)/,nhà thiết kế",
+            "3,protect,v,/prəˈtekt/,bảo vệ",
+            ",protective,adj,/prəˈtektɪv/,có tính bảo vệ",
+            "4,develop,v,/dɪˈveləp/,phát triển",
+            ",development,n,/dɪˈveləpmənt/,sự phát triển",
+            "5,harmony,n,/ˈhɑːməni/,sự hòa hợp",
+            ",harmonious,adj,/hɑːˈməʊniəs/,hài hòa",
+            "6,society,n,/səˈsaɪəti/,xã hội",
+            ",social,adj,/ˈsəʊʃl/,thuộc về xã hội",
+        ]
     doc=N['parse_vocab_csv']('\n'.join(rows),unit=unit,title=title,heading_unit=unit.split('.')[0])
     data=N['render_vocab_docx'](doc,template_path=MASTER).getvalue()
     path=DEST/(f'{unit.replace(".","_")}.docx')
