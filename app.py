@@ -1263,11 +1263,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-advanced_mode = st.toggle(
-    "Bật chế độ thiết kế nâng cao",
-    value=False,
-    help="Mặc định dùng toàn bộ màu, font, logo, header và footer gốc. Chỉ bật khi bạn thật sự muốn chỉnh từng thành phần.",
-)
+
 
 # -------------------- SOURCE / IMPORT FIRST (before widgets bound to metadata keys) --------------------
 with st.sidebar:
@@ -1329,12 +1325,10 @@ with st.sidebar:
         st.error(st.session_state["_import_error"])
 
 # -------------------- STUDIO TABS --------------------
-if advanced_mode:
-    tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
-        ["01 · Soạn từ vựng", "02 · Header / Title", "03 · Bảng", "04 · Footer", "05 · Xuất Word"]
-    )
-else:
-    tab_data, tab_export = st.tabs(["01 · Soạn từ vựng", "02 · Xuất Word"])
+tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
+    ["01 · Soạn từ vựng", "02 · Header / Title", "03 · Bảng", "04 · Footer", "05 · Xuất Word"]
+)
+st.caption("Template gốc được giữ nguyên. Bạn chỉ cần dùng tab Soạn từ vựng và Xuất Word; các tab còn lại dành cho chỉnh sâu.")
 
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
