@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - fix/robust-title-typesetting
       - feat/visual-header-footer-continuous-table
 
 permissions:
