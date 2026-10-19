@@ -1,0 +1,24 @@
+name: Original-template regression tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - fix/preserve-original-lingualxplore-template
+
+jobs:
+  docx-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile app
+        run: python -m py_compile app.py
+      - name: Test original LingualXplore template
+        run: python -m unittest discover -s tests -p "test_*.py" -v
