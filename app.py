@@ -1531,12 +1531,74 @@ with st.sidebar:
         st.error(st.session_state["_import_error"])
 
 # -------------------- STUDIO TABS --------------------
-tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
-    ["01 · Soạn từ vựng", "02 · Header / Title", "03 · Bảng", "04 · Footer", "05 · Xuất Word"]
+tab_studio, tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
+    ["01 · Studio trực quan", "02 · Từ vựng", "03 · Header nâng cao", "04 · Bảng", "05 · Footer nâng cao", "06 · Xuất Word"]
 )
 st.caption("Template gốc được giữ nguyên. Bạn chỉ cần dùng tab Soạn từ vựng và Xuất Word; các tab còn lại dành cho chỉnh sâu.")
 
 quick_generate = False
+
+with tab_studio:
+    st.markdown("### Header & Footer — xem và chỉnh sửa ngay")
+    st.caption(
+        "Thay chữ trong các ô bên trái để thấy bản xem nhanh cập nhật bên phải. "
+        "Để chỉnh từng font/màu riêng, dùng các tab nâng cao."
+    )
+    left, right = st.columns([1, 1.15], gap="large")
+    with left:
+        st.text_input("Tiêu đề", key="studio_edit_title", on_change=_sync_studio_title)
+        st.markdown("**Header**")
+        st.text_input(
+            "Dòng Header 1", key="studio_header_line1",
+            on_change=_sync_studio_words,
+            args=("studio_header_line1", "h", (0, 1)),
+        )
+        st.text_input(
+            "Dòng Header 2", key="studio_header_line2",
+            on_change=_sync_studio_words,
+            args=("studio_header_line2", "h", (2, 3, 4, 5, 6, 7)),
+        )
+        st.markdown("**Footer**")
+        st.text_input(
+            "Slogan", key="studio_slogan",
+            on_change=_sync_studio_words,
+            args=("studio_slogan", "f", (0, 1, 2, 3)),
+        )
+        show_a, show_b = st.columns(2)
+        show_a.toggle("Hiện số điện thoại", key="studio_show_phone")
+        show_b.toggle("Hiện email", key="studio_show_email")
+        if st.session_state["studio_show_phone"]:
+            st.text_input("Số điện thoại", key="studio_phone")
+        if st.session_state["studio_show_email"]:
+            st.text_input("Địa chỉ email", key="studio_email")
+        st.caption(
+            "Bản xem nhanh giúp chỉnh nội dung và cách sắp xếp. "
+            "Bản Word thực tế vẫn dùng template LingualXplore gốc."
+        )
+    with right:
+        st.markdown("**Visual preview — luôn hiển thị**")
+        st.markdown(
+            _studio_page_html(
+                label=st.session_state["section_label"],
+                heading=st.session_state["heading_unit"] + ": "
+                        + st.session_state["studio_edit_title"].upper(),
+                document_type=st.session_state["document_type"],
+                badge=st.session_state["unit"],
+                h1=st.session_state["studio_header_line1"],
+                h2=st.session_state["studio_header_line2"],
+                slogan=st.session_state["studio_slogan"],
+                phone=st.session_state["studio_phone"],
+                email=st.session_state["studio_email"],
+                show_phone=st.session_state["studio_show_phone"],
+                show_email=st.session_state["studio_show_email"],
+            ),
+            unsafe_allow_html=True,
+        )
+    st.info(
+        "Để sửa bảng như trong Word, mở tab **02 · Từ vựng** và chỉnh từng ô trực tiếp. "
+        "Các tính năng gõ chữ phong phú như track changes chưa được hỗ trợ."
+    )
+
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
     preview_image = BASE_DIR / "assets" / "lingualxplore-template-preview.png"
@@ -1813,9 +1875,11 @@ with tab_footer:
         with st.container(border=True):
             st.markdown("**Thông tin liên hệ**")
             phone_symbol = st.selectbox("Ký hiệu SĐT", ["☎", "☏", "•"], index=0)
-            phone = st.text_input("Số điện thoại", "0345286842")
+            phone = st.session_state["studio_phone"]
+            st.caption("Nội dung số điện thoại chỉnh trong tab 01.")
             email_symbol = st.selectbox("Ký hiệu email", ["✉", "@", "•"], index=0)
-            email = st.text_input("Email", "email@yourcenter.com")
+            email = st.session_state["studio_email"]
+            st.caption("Nội dung email chỉnh trong tab 01.")
             contact_font = font_select("Font contact", "Arial", key="contact_font")
             contact_size = st.number_input("Size contact", 6.0, 16.0, 10.5, 0.5)
             phone_color = st.color_picker("Màu SĐT", "#BF4E14")
@@ -1889,6 +1953,8 @@ with tab_export:
                 slogan_align=slogan_align,
                 phone=phone,
                 email=email,
+                show_phone=st.session_state["studio_show_phone"],
+                show_email=st.session_state["studio_show_email"],
                 phone_symbol=phone_symbol,
                 email_symbol=email_symbol,
                 contact_font=contact_font,
