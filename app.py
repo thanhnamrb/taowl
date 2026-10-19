@@ -1446,6 +1446,7 @@ tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
 )
 st.caption("Template gốc được giữ nguyên. Bạn chỉ cần dùng tab Soạn từ vựng và Xuất Word; các tab còn lại dành cho chỉnh sâu.")
 
+quick_generate = False
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
     preview_image = BASE_DIR / "assets" / "lingualxplore-template-preview.png"
@@ -1528,6 +1529,41 @@ with tab_data:
             c2.metric("Vocabulary rows", preview_doc.word_count)
         except Exception:
             pass
+
+    if source_mode != "Chuyển hàng loạt Word cũ":
+        st.markdown("#### Xuất nhanh")
+        st.caption("Định dạng Word mặc định luôn giữ template LingualXplore gốc.")
+        quick_generate = st.button(
+            "Tạo Word từ danh sách hiện tại",
+            type="primary", use_container_width=True, key="studio_quick_generate",
+        )
+        if quick_generate:
+            try:
+                draft_doc = parse_vocab_csv(
+                    active_editor_csv(),
+                    unit=st.session_state.unit,
+                    heading_unit=st.session_state.heading_unit,
+                    title=st.session_state.title,
+                    section_label=st.session_state.section_label,
+                    document_type=st.session_state.document_type,
+                )
+                errors = [m.message for m in validate_vocab(draft_doc) if m.level == "error"]
+                if errors:
+                    for message in errors:
+                        st.error(message)
+                    quick_generate = False
+            except Exception as exc:
+                st.error(f"Dữ liệu chưa hợp lệ: {exc}")
+                quick_generate = False
+        if st.session_state.get("_last_export_bytes"):
+            st.download_button(
+                "Tải Word vừa tạo",
+                data=st.session_state["_last_export_bytes"],
+                file_name=st.session_state.get("_last_export_name","VOCAB_BUILDER.docx"),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True, key="studio_quick_download",
+            )
+
 
 # -------------------- HEADER + TITLE --------------------
 HEADER_DEFAULTS = [
@@ -1715,7 +1751,7 @@ with tab_export:
         help="Batch QA sẽ chậm hơn vì app phải đọc lại từng DOCX vừa sinh." if is_batch else None,
     )
     button_label = "TẠO ZIP HÀNG LOẠT" if is_batch else "TẠO FILE WORD"
-    generate = st.button(button_label, type="primary", use_container_width=True)
+    generate = st.button(button_label, type="primary", use_container_width=True) or quick_generate
 
     if generate:
         if not TEMPLATE_PATH.exists():
@@ -1910,6 +1946,8 @@ with tab_export:
 
             st.session_state["_last_export_bytes"] = output.getvalue()
             st.session_state["_last_export_name"] = filename
+            if quick_generate:
+                st.rerun()  # Show download beside the editor in the same workflow.
             st.download_button(
                 "TẢI FILE WORD",
                 output.getvalue(),
