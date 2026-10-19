@@ -41,6 +41,10 @@ def make(title: str, unit: str, count: int) -> str:
             "6,society,n,/səˈsaɪəti/,xã hội",
             ",social,adj,/ˈsəʊʃl/,thuộc về xã hội",
         ]
+    if unit == "10.1":
+        rows = ["No.,Word,Type,Pronunciation,Meaning"]
+        for i in range(85):
+            rows.append(("1" if i == 0 else "") + f",continuous{i},n,/kənˈtɪnjʊəs/,Nghĩa từ vựng thứ {i}")
     doc=N['parse_vocab_csv']('\n'.join(rows),unit=unit,title=title,heading_unit=unit.split('.')[0])
     data=N['render_vocab_docx'](doc,template_path=MASTER).getvalue()
     path=DEST/(f'{unit.replace(".","_")}.docx')
@@ -52,6 +56,7 @@ for title,unit,count in [
     ('PEOPLE & PLACES','7.1',8),
     ('SPECIAL DAYS AND CULTURAL FESTIVALS AROUND THE WORLD','8.2',12),
     ('WILDLIFE AND ENVIRONMENT','9.3',85),
+    ('ONE VERY LONG WORD FAMILY','10.1',85),
 ]:
     path=make(title,unit,count)
     proc=subprocess.run(
@@ -64,6 +69,21 @@ for title,unit,count in [
         raise RuntimeError(f'LibreOffice failed for {path.name}: {proc.stderr}')
     pdf=fitz.open(path.with_suffix('.pdf'))
     print('PDF',unit,'pages',len(pdf),'page size',pdf[0].rect,'expected rows',count*2)
+    if unit == '10.1':
+        for i, page in enumerate(pdf):
+            if i >= len(pdf)-1:
+                break
+            text_rows = [
+                w for w in page.get_text("words")
+                if (w[4].startswith("continuous") or w[4].startswith("Nghĩa"))
+            ]
+            if not text_rows:
+                raise AssertionError(f'Word family missing on PDF page {i+1}')
+            last_text_bottom = max(w[3] for w in text_rows)
+            print('FAMILY-CONTINUATION-PAGE',i+1,'body bottom',round(last_text_bottom,1))
+            if last_text_bottom < 650:
+                raise AssertionError(f'Wasted content space on page {i+1}: last row ends at {last_text_bottom:.1f}')
+
     for i,page in enumerate(pdf):
         words=page.get_text("words")
         if not words:
