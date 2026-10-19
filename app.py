@@ -799,7 +799,7 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
     table.autofit = False
     # Balanced columns make the page badge mathematically centered in the text area.
     center_w = Inches(0.78)
-    side_w = (content_width - center_w) / 2
+    side_w = int((content_width - center_w) / 2)
     widths = [side_w, center_w, side_w]
     for i, width in enumerate(widths):
         table.columns[i].width = width
