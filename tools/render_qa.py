@@ -51,6 +51,20 @@ for title,unit,count in [
         words=page.get_text("words")
         if not words:
             raise AssertionError(f'Blank page {i+1} in {unit}')
+        footer_words=[w for w in words if w[3] > page.rect.height - 65]
+        visible_page=[w for w in footer_words if w[4] == str(i+1)]
+        if not visible_page:
+            raise AssertionError(f'PAGE field {i+1} missing in {unit}')
+        bbox=visible_page[-1]
+        field_center=(bbox[0]+bbox[2])/2
+        page_center=page.rect.width/2
+        print(' FOOTER-PAGE',unit,i+1,'center',round(field_center,2),'expected',round(page_center,2))
+        if abs(field_center-page_center) > 7:
+            raise AssertionError(f'PAGE field displaced {field_center-page_center:.1f}pt in {unit}')
+        if not any('email@yourcenter.com' in w[4] for w in footer_words):
+            raise AssertionError(f'Missing footer email in {unit} page {i+1}')
+        if not any('0345286842' in w[4] for w in footer_words):
+            raise AssertionError(f'Missing footer phone in {unit} page {i+1}')
         if i==0:
             print(' PAGE-ONE-TEXT',repr(page.get_text()[:400]))
             for label in ['VOCAB','UNIT','PLACES','Learners','Explorers','0345286842']:
