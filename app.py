@@ -673,10 +673,23 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             _set_cell_text_preserve_geometry(row.cells[2], item.word_type, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[3], item.pronunciation, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[4], item.meaning, style=table_theme.body_text)
+            # A paragraph longer than one page MUST be allowed to flow. Do not
+            # force Word to keep an enormous row in one piece.
+            if max(len(item.meaning), len(item.pronunciation), len(item.word)) > 900:
+                trpr = row._tr.get_or_add_trPr()
+                cant_split = trpr.find(qn("w:cantSplit"))
+                if cant_split is not None:
+                    trpr.remove(cant_split)
+                for c in row.cells:
+                    for p in c.paragraphs:
+                        p.paragraph_format.keep_together = False
             family_rows.append(row)
 
+        # Keep short word families together, but do not force a very large
+        # family onto one page (which can create excessive whitespace).
+        keep_group = len(family_rows) <= 4
         for i, row in enumerate(family_rows):
-            _set_family_keep_next(row, i < len(family_rows) - 1)
+            _set_family_keep_next(row, keep_group and i < len(family_rows) - 1)
         if len(family_rows) > 1:
             merge_groups.append(family_rows)
 
