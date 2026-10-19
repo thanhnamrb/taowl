@@ -323,10 +323,59 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
         p.getparent().remove(p)
     heading = f"{document.section_label} {document.display_heading_unit}: {document.title.upper()}"
     heading_style = deepcopy(theme.heading)
-    if len(heading) > 46:
-        heading_style.size = max(18.0, heading_style.size * 46 / len(heading))
-    _set_single_run_paragraph(main.paragraphs[0], heading, heading_style, align=WD_ALIGN_PARAGRAPH.LEFT)
-    main.paragraphs[0].paragraph_format.line_spacing = 1.05
+
+    # The source cell is 5.138in wide. Count *glyph widths*, not characters:
+    # the former len(heading)>46 rule let a 23-character heading wrap badly.
+    def width_units(value: str) -> float:
+        units = 0.0
+        for char in value.upper():
+            if char == " ":
+                units += .36
+            elif char in "I1|!:;,. ":
+                units += .33
+            elif char in "MW@":
+                units += .97
+            elif char in "JLTFR":
+                units += .62
+            else:
+                units += .72
+        return units
+
+    cell_width_pt = title.columns[2].width.pt if title.columns[2].width else 365.0
+    safe_width_pt = max(180.0, cell_width_pt - 22.0)
+    base_size = float(heading_style.size)
+    single_line_size = min(base_size, safe_width_pt / max(width_units(heading), 1.0))
+
+    if single_line_size >= 18.5:
+        # Prefer one line for ordinary titles, e.g. "UNIT 7: PEOPLE & PLACES".
+        heading_style.size = single_line_size * .97
+        heading_text = heading
+    else:
+        # Two balanced lines, staying inside the ORIGINAL artwork bounds.
+        words = heading.split()
+        best = None
+        for cut in range(2, len(words)):
+            left, right = " ".join(words[:cut]), " ".join(words[cut:])
+            balance = max(width_units(left), width_units(right))
+            candidate = (balance, left, right)
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+        if best is None:
+            raise ValueError("Tiêu đề quá dài để hiển thị trong template gốc.")
+        _, left, right = best
+        two_line_size = min(base_size, safe_width_pt / max(width_units(left), width_units(right), 1.0))
+        if two_line_size < 17.5:
+            raise ValueError(
+                "Tiêu đề quá dài cho vùng title gốc. Hãy rút ngắn để tránh tràn chữ."
+            )
+        heading_style.size = two_line_size * .96
+        heading_text = left + "\n" + right
+
+    _set_single_run_paragraph(
+        main.paragraphs[0], heading_text, heading_style,
+        align=WD_ALIGN_PARAGRAPH.LEFT,
+    )
+    main.paragraphs[0].paragraph_format.line_spacing = 1.06
 
 
 def _alignment(value: str):
