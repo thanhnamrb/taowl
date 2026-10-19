@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import base64
+from html import escape as html_escape
 import re
 import tempfile
 from copy import deepcopy
@@ -12,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import streamlit as st
 import pandas as pd
+from PIL import Image as PILImage
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
@@ -192,6 +195,8 @@ class FooterTheme:
     slogan_align: str = "left"
     phone: str = "0345286842"
     email: str = "email@yourcenter.com"
+    show_phone: bool = True
+    show_email: bool = True
     phone_symbol: str = "☎"
     email_symbol: str = "✉"
     contact_font: str = "Arial"
@@ -302,8 +307,12 @@ def _set_title_block(doc: Document, document: VocabDocument, theme: ThemeConfig)
     badge = title.rows[0].cells[0]
     badge.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     _set_cell_no_wrap(badge, False)
+    badge_style = deepcopy(theme.badge)
+    if len(document.unit_badge) > 3:
+        # The artwork's orange badge must remain one line for 10.1 / 11.10.
+        badge_style.size = min(badge_style.size, max(16.0, 88.0 / (len(document.unit_badge) * .90)))
     _set_single_run_paragraph(
-        badge.paragraphs[0], document.unit_badge, theme.badge,
+        badge.paragraphs[0], document.unit_badge, badge_style,
         align=WD_ALIGN_PARAGRAPH.CENTER,
     )
 
@@ -499,6 +508,23 @@ def _set_vmerge_tc(tc, *, restart: bool) -> None:
 
 
 
+def _hide_family_rail_horizontal_rule(cell, *, top: bool = False, bottom: bool = False) -> None:
+    """Keep the original merged orange-rail appearance without Word vMerge."""
+    pr = cell._tc.get_or_add_tcPr()
+    borders = pr.find(qn("w:tcBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tcBorders")
+        pr.append(borders)
+    for edge_name, hide in (("top", top), ("bottom", bottom)):
+        if not hide:
+            continue
+        edge = borders.find(qn("w:" + edge_name))
+        if edge is None:
+            edge = OxmlElement("w:" + edge_name)
+            borders.append(edge)
+        edge.set(qn("w:val"), "nil")
+
+
 def _set_cell_no_wrap(cell, enabled: bool = True) -> None:
     tcpr = cell._tc.get_or_add_tcPr()
     node = tcpr.find(qn("w:noWrap"))
@@ -647,7 +673,6 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
 
     root_proto = table.rows[1]
     derivative_proto = table.rows[2]
-    merge_groups = []
 
     for family in document.families:
         family_rows = []
@@ -655,7 +680,12 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             source = root_proto if word_index == 0 else derivative_proto
             table._tbl.append(deepcopy(source._tr))
             row = table.rows[-1]
-            _set_cant_split(row)
+            # Allow a family, including a very long row, to flow to the next page.
+            # Word must never move a whole family solely to preserve its grouping.
+            tr_pr = row._tr.get_or_add_trPr()
+            cant_split = tr_pr.find(qn("w:cantSplit"))
+            if cant_split is not None:
+                tr_pr.remove(cant_split)
             for cell_index, c in enumerate(row.cells):
                 _clear_vmerge(c)
                 if cell_index == 0:
@@ -673,38 +703,25 @@ def _populate_vocab_table(doc: Document, document: VocabDocument, table_theme: T
             _set_cell_text_preserve_geometry(row.cells[2], item.word_type, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[3], item.pronunciation, style=table_theme.body_text)
             _set_cell_text_preserve_geometry(row.cells[4], item.meaning, style=table_theme.body_text)
-            # A paragraph longer than one page MUST be allowed to flow. Do not
-            # force Word to keep an enormous row in one piece.
-            if max(len(item.meaning), len(item.pronunciation), len(item.word)) > 900:
-                trpr = row._tr.get_or_add_trPr()
-                cant_split = trpr.find(qn("w:cantSplit"))
-                if cant_split is not None:
-                    trpr.remove(cant_split)
-                for c in row.cells:
-                    for p in c.paragraphs:
-                        p.paragraph_format.keep_together = False
+            # Explicitly clear paragraph keep flags inherited from prototype.
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.keep_with_next = False
+                    paragraph.paragraph_format.keep_together = False
+                    paragraph.paragraph_format.widow_control = False
+            # Retain the orange family number rail visually, but do not merge cells:
+            # vertical merges spanning pages often leave large whitespace in Word.
             family_rows.append(row)
 
-        # Keep short word families together, but do not force a very large
-        # family onto one page (which can create excessive whitespace).
-        keep_group = len(family_rows) <= 4
-        for i, row in enumerate(family_rows):
-            _set_family_keep_next(row, keep_group and i < len(family_rows) - 1)
-            if any(len(c.text) > 900 for c in row.cells):
-                for c in row.cells:
-                    for p in c.paragraphs:
-                        p.paragraph_format.keep_together = False
-        if len(family_rows) > 1:
-            merge_groups.append(family_rows)
+        # A seamless orange No. rail, even if the family crosses a page break.
+        for i, number_row in enumerate(family_rows):
+            _hide_family_rail_horizontal_rule(
+                number_row.cells[0], top=i > 0, bottom=i < len(family_rows) - 1,
+            )
 
     table._tbl.remove(root_proto._tr)
     table._tbl.remove(derivative_proto._tr)
 
-    # One single continuous table. Apply vMerge only after all body text is final.
-    for family_rows in merge_groups:
-        _set_vmerge_tc(family_rows[0]._tr.tc_lst[0], restart=True)
-        for row in family_rows[1:]:
-            _set_vmerge_tc(row._tr.tc_lst[0], restart=False)
 
 
 
@@ -912,7 +929,10 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
     plain_runs = [r for r in original.runs if r.text.strip()]
     for run in reversed(plain_runs):
         if re.fullmatch(r"[\d+()\s-]{6,}", run.text.strip()):
-            run.text = (footer_theme.phone_symbol + " " + footer_theme.phone).strip()
+            run.text = (
+                (footer_theme.phone_symbol + " " + footer_theme.phone).strip()
+                if footer_theme.show_phone and footer_theme.phone.strip() else ""
+            )
             _apply_run_style(
                 run, TextStyle(
                     footer_theme.contact_font, footer_theme.contact_size,
@@ -929,11 +949,11 @@ def _set_footer(doc: Document, footer_theme: FooterTheme) -> None:
         if re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", old):
             node.text = re.sub(
                 r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
-                footer_theme.email.strip(), old,
+                footer_theme.email.strip() if footer_theme.show_email else "", old,
             )
             found_email = True
 
-    if footer_theme.email.strip() and not found_email:
+    if footer_theme.show_email and footer_theme.email.strip() and not found_email:
         # The original master has a right-aligned phone but no email run.
         # Add email immediately below it without touching background artwork.
         p_email = footer.add_paragraph(style="Footer")
@@ -1331,6 +1351,99 @@ def font_select(label: str, default: str, *, key: str, help: str | None = None):
     return st.selectbox(label, FONT_OPTIONS, index=_font_index(default), key=key, help=help)
 
 
+
+# ===================== VISUAL DOCUMENT STUDIO =====================
+def _sync_studio_words(source: str, prefix: str, indexes: tuple[int, ...]) -> None:
+    """Update the original formatted runs from one simple text field."""
+    words = (st.session_state.get(source) or "").strip().split()
+    for position, index in enumerate(indexes):
+        if position < len(indexes) - 1:
+            value = words[position] if position < len(words) else ""
+        else:
+            value = " ".join(words[position:])
+        st.session_state[f"{prefix}_text_{index}"] = value
+
+
+def _sync_studio_title() -> None:
+    st.session_state["title"] = st.session_state["studio_edit_title"]
+
+
+def _sync_sidebar_title() -> None:
+    st.session_state["studio_edit_title"] = st.session_state["title"]
+
+
+@st.cache_data(show_spinner=False)
+def _original_logo_image() -> str:
+    """Use the actual branded image extracted from a DOCX render, not a substitute."""
+    preview = Path(__file__).resolve().parent / "assets" / "lingualxplore-template-preview.png"
+    if not preview.is_file():
+        return ""
+    with PILImage.open(preview) as picture:
+        factor = picture.width / 893.0
+        area = tuple(round(v * factor) for v in (44, 31, 270, 105))
+        cropped = picture.crop(area).convert("RGB")
+        out = io.BytesIO()
+        cropped.save(out, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode("ascii")
+
+
+def _studio_page_html(*, label: str, heading: str, document_type: str, badge: str,
+                      h1: str, h2: str, slogan: str, phone: str, email: str,
+                      show_phone: bool, show_email: bool) -> str:
+    """A responsive LIVE visual approximation; actual layout remains the master DOCX."""
+    logo = _original_logo_image()
+    logo_html = (f'<img src="{logo}" alt="LingualXplore" style="width:100%;max-width:180px;height:auto">'
+                 if logo else '<span style="font-size:20px;color:#df9d79">LingualXplore</span>')
+    contact = ""
+    if show_phone and phone.strip():
+        contact += '<div style="color:#cd885f">☎ ' + html_escape(phone) + '</div>'
+    if show_email and email.strip():
+        contact += '<div style="color:#7795a6">✉ ' + html_escape(email) + '</div>'
+    return f"""
+    <div style="background:white;border:1px solid #dde4e8;border-radius:14px;
+                box-shadow:0 12px 28px #16394e18;padding:22px;min-height:410px;
+                display:flex;flex-direction:column;color:#111;">
+       <div style="display:grid;grid-template-columns:43% 57%;align-items:start;gap:8px;">
+          <div>{logo_html}</div>
+          <div style="text-align:right;font-size:11px;line-height:1.6">
+             <div style="color:#e4a585">{html_escape(h1)}</div>
+             <div style="color:#82a3b2">{html_escape(h2)}</div>
+          </div>
+       </div>
+       <div style="display:flex;align-items:center;gap:10px;margin-top:48px;
+                   background:linear-gradient(110deg,#fff 46%,#c3d4dc 75%,#144661);
+                   min-height:96px;border-radius:12px;overflow:hidden">
+          <div style="background:linear-gradient(135deg,#a34518,#e9ad8b);color:white;
+                      align-self:stretch;min-width:88px;display:flex;align-items:center;justify-content:center;
+                      font-size:30px;font-weight:800;border-radius:12px">{html_escape(badge)}</div>
+          <div style="flex:1;min-width:0;padding:12px 8px 12px 4px">
+             <div style="font-weight:800;color:#b64d1b;font-size:14px">{html_escape(document_type)}</div>
+             <div style="font-size:19px;font-weight:850;line-height:1.25;overflow-wrap:anywhere">
+                {html_escape(label+" "+heading)}
+             </div>
+          </div>
+       </div>
+       <div style="margin-top:20px;display:grid;grid-template-columns:8% 21% 15% 23% 33%;
+                   background:#0f4761;color:white;padding:8px 5px;font-size:10px;text-align:center;
+                   font-weight:700;border-radius:3px">
+          <span>No.</span><span>Word</span><span>Type</span><span>IPA</span><span>Meaning</span>
+       </div>
+       <div style="height:74px;background:repeating-linear-gradient(#fff 0px,#fff 25px,#e8eef1 25px,#e8eef1 26px);
+                   border-left:5px solid #bf4e14;border-right:1px solid #e8eef1"></div>
+       <div style="flex:1;min-height:45px"></div>
+       <div style="display:grid;grid-template-columns:1fr 36px 1fr;gap:8px;align-items:center;
+                   border-top:1px solid #e5ebef;padding-top:12px;font-size:11px">
+          <div style="color:#69899c;font-weight:700;overflow-wrap:anywhere">{html_escape(slogan)}</div>
+          <div style="width:30px;height:30px;border-radius:50%;
+                      background:linear-gradient(135deg,#9a451c,#dfaa93);color:white;
+                      display:flex;align-items:center;justify-content:center;font-weight:800">1</div>
+          <div style="text-align:right;font-weight:700;overflow-wrap:anywhere;font-size:10px">
+             {contact}
+          </div>
+       </div>
+    </div>"""
+
+
 def _ensure_defaults() -> None:
     defaults = {
         "source_mode": "Dán CSV / Clipboard",
@@ -1341,6 +1454,14 @@ def _ensure_defaults() -> None:
         "title": "SPECIAL DAYS",
         "filename": "VOCAB BUILDER UNIT 5.1 - SPECIAL DAYS.docx",
         "raw_data": "",
+        "studio_edit_title": "SPECIAL DAYS",
+        "studio_header_line1": "Supplementary Vocabulary",
+        "studio_header_line2": "for KET Learners in Orwell Classes",
+        "studio_slogan": "From Learners to Explorers",
+        "studio_phone": "0345286842",
+        "studio_email": "email@yourcenter.com",
+        "studio_show_phone": True,
+        "studio_show_email": True,
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
@@ -1403,6 +1524,8 @@ with st.sidebar:
                         if meta.get(key):
                             st.session_state[key] = meta[key]
                     st.session_state["raw_data"] = csv_text
+                    if meta.get("title"):
+                        st.session_state["studio_edit_title"] = meta["title"]
                     st.session_state["_old_doc_digest"] = digest
                     st.session_state["_import_notes"] = import_notes
                     st.session_state.pop("_import_error", None)
@@ -1428,7 +1551,7 @@ with st.sidebar:
     st.text_input("Sub-unit / badge", key="unit", help="Ví dụ 5.1 – hiển thị trong ô cam bên trái.")
     st.text_input("Số ở heading", key="heading_unit", help="Ví dụ 5 → UNIT 5: SPECIAL DAYS")
     st.text_input("Document type", key="document_type")
-    st.text_input("Title", key="title")
+    st.text_input("Title", key="title", on_change=_sync_sidebar_title)
     st.text_input("Tên file tải về", key="filename")
     if source_mode == "Chuyển hàng loạt Word cũ":
         st.caption("Các ô metadata phía trên chỉ dùng cho chế độ tạo mới / 1 file. Batch sẽ dùng metadata của từng DOCX.")
@@ -1441,12 +1564,104 @@ with st.sidebar:
         st.error(st.session_state["_import_error"])
 
 # -------------------- STUDIO TABS --------------------
-tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
-    ["01 · Soạn từ vựng", "02 · Header / Title", "03 · Bảng", "04 · Footer", "05 · Xuất Word"]
+tab_studio, tab_data, tab_title, tab_table, tab_footer, tab_export = st.tabs(
+    ["01 · Studio trực quan", "02 · Từ vựng", "03 · Header nâng cao", "04 · Bảng", "05 · Footer nâng cao", "06 · Xuất Word"]
 )
 st.caption("Template gốc được giữ nguyên. Bạn chỉ cần dùng tab Soạn từ vựng và Xuất Word; các tab còn lại dành cho chỉnh sâu.")
 
 quick_generate = False
+
+studio_generate = False
+with tab_studio:
+    st.markdown("### Header & Footer — xem và chỉnh sửa ngay")
+    st.caption(
+        "Thay chữ trong các ô bên trái để thấy bản xem nhanh cập nhật bên phải. "
+        "Để chỉnh từng font/màu riêng, dùng các tab nâng cao."
+    )
+    left, right = st.columns([1, 1.15], gap="large")
+    with left:
+        st.text_input("Tiêu đề", key="studio_edit_title", on_change=_sync_studio_title)
+        st.markdown("**Header**")
+        st.text_input(
+            "Dòng Header 1", key="studio_header_line1",
+            on_change=_sync_studio_words,
+            args=("studio_header_line1", "h", (0, 1)),
+        )
+        st.text_input(
+            "Dòng Header 2", key="studio_header_line2",
+            on_change=_sync_studio_words,
+            args=("studio_header_line2", "h", (2, 3, 4, 5, 6, 7)),
+        )
+        st.markdown("**Footer**")
+        st.text_input(
+            "Slogan", key="studio_slogan",
+            on_change=_sync_studio_words,
+            args=("studio_slogan", "f", (0, 1, 2, 3)),
+        )
+        show_a, show_b = st.columns(2)
+        show_a.toggle("Hiện số điện thoại", key="studio_show_phone")
+        show_b.toggle("Hiện email", key="studio_show_email")
+        if st.session_state["studio_show_phone"]:
+            st.text_input("Số điện thoại", key="studio_phone")
+        if st.session_state["studio_show_email"]:
+            st.text_input("Địa chỉ email", key="studio_email")
+        st.caption(
+            "Bản xem nhanh giúp chỉnh nội dung và cách sắp xếp. "
+            "Bản Word thực tế vẫn dùng template LingualXplore gốc."
+        )
+    with right:
+        st.markdown("**Visual preview — luôn hiển thị**")
+        st.markdown(
+            _studio_page_html(
+                label=st.session_state["section_label"],
+                heading=st.session_state["heading_unit"] + ": "
+                        + st.session_state["studio_edit_title"].upper(),
+                document_type=st.session_state["document_type"],
+                badge=st.session_state["unit"],
+                h1=st.session_state["studio_header_line1"],
+                h2=st.session_state["studio_header_line2"],
+                slogan=st.session_state["studio_slogan"],
+                phone=st.session_state["studio_phone"],
+                email=st.session_state["studio_email"],
+                show_phone=st.session_state["studio_show_phone"],
+                show_email=st.session_state["studio_show_email"],
+            ),
+            unsafe_allow_html=True,
+        )
+    st.info(
+        "Để sửa bảng như trong Word, mở tab **02 · Từ vựng** và chỉnh từng ô trực tiếp. "
+        "Các tính năng gõ chữ phong phú như track changes chưa được hỗ trợ."
+    )
+    if source_mode != "Chuyển hàng loạt Word cũ":
+        studio_generate = st.button(
+            "Tạo file Word với Header/Footer này",
+            key="studio_visual_generate", type="primary", use_container_width=True,
+        )
+        if studio_generate:
+            try:
+                candidate = parse_vocab_csv(
+                    active_editor_csv(), unit=st.session_state.unit,
+                    heading_unit=st.session_state.heading_unit, title=st.session_state.title,
+                    section_label=st.session_state.section_label,
+                    document_type=st.session_state.document_type,
+                )
+                errors = [m.message for m in validate_vocab(candidate) if m.level == "error"]
+                if errors:
+                    for message in errors:
+                        st.error(message)
+                    studio_generate = False
+            except Exception as exc:
+                st.error(f"Không thể tạo file: {exc}")
+                studio_generate = False
+        if st.session_state.get("_last_export_bytes"):
+            st.download_button(
+                "Tải DOCX vừa tạo",
+                st.session_state["_last_export_bytes"],
+                file_name=st.session_state.get("_last_export_name", "VOCAB_BUILDER.docx"),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="studio_visual_download", use_container_width=True,
+            )
+
 with tab_data:
     st.markdown("### Dữ liệu từ vựng")
     preview_image = BASE_DIR / "assets" / "lingualxplore-template-preview.png"
@@ -1641,6 +1856,23 @@ with tab_title:
                 italic = st.checkbox("I", italic_d, key=f"h_italic_{i}")
             header_values.append((line, text, font, size, color, bold, italic))
 
+    st.markdown("#### Xem nhanh Header đang chỉnh")
+    st.markdown(
+        _studio_page_html(
+            label=st.session_state["section_label"],
+            heading=st.session_state["heading_unit"] + ": " + st.session_state["title"].upper(),
+            document_type=st.session_state["document_type"],
+            badge=st.session_state["unit"],
+            h1=" ".join(t for ln, t, *_ in header_values if ln == 1),
+            h2=" ".join(t for ln, t, *_ in header_values if ln == 2),
+            slogan=st.session_state["studio_slogan"],
+            phone=st.session_state["studio_phone"],
+            email=st.session_state["studio_email"],
+            show_phone=st.session_state["studio_show_phone"],
+            show_email=st.session_state["studio_show_email"],
+        ), unsafe_allow_html=True,
+    )
+
 # -------------------- TABLE --------------------
 with tab_table:
     st.markdown("### Table theme")
@@ -1723,14 +1955,33 @@ with tab_footer:
         with st.container(border=True):
             st.markdown("**Thông tin liên hệ**")
             phone_symbol = st.selectbox("Ký hiệu SĐT", ["☎", "☏", "•"], index=0)
-            phone = st.text_input("Số điện thoại", "0345286842")
+            phone = st.session_state["studio_phone"]
+            st.caption("Nội dung số điện thoại chỉnh trong tab 01.")
             email_symbol = st.selectbox("Ký hiệu email", ["✉", "@", "•"], index=0)
-            email = st.text_input("Email", "email@yourcenter.com")
+            email = st.session_state["studio_email"]
+            st.caption("Nội dung email chỉnh trong tab 01.")
             contact_font = font_select("Font contact", "Arial", key="contact_font")
             contact_size = st.number_input("Size contact", 6.0, 16.0, 10.5, 0.5)
             phone_color = st.color_picker("Màu SĐT", "#BF4E14")
             email_color = st.color_picker("Màu email", "#0F4761")
             contact_bold = st.checkbox("Bold contact", True)
+
+    st.markdown("#### Xem nhanh Footer đang chỉnh")
+    st.markdown(
+        _studio_page_html(
+            label=st.session_state["section_label"],
+            heading=st.session_state["heading_unit"] + ": " + st.session_state["title"].upper(),
+            document_type=st.session_state["document_type"],
+            badge=st.session_state["unit"],
+            h1=st.session_state["studio_header_line1"],
+            h2=st.session_state["studio_header_line2"],
+            slogan=" ".join(t for t, *_ in footer_segments_values if t.strip()),
+            phone=st.session_state["studio_phone"],
+            email=st.session_state["studio_email"],
+            show_phone=st.session_state["studio_show_phone"],
+            show_email=st.session_state["studio_show_email"],
+        ), unsafe_allow_html=True,
+    )
 
 # -------------------- EXPORT --------------------
 with tab_export:
@@ -1751,7 +2002,7 @@ with tab_export:
         help="Batch QA sẽ chậm hơn vì app phải đọc lại từng DOCX vừa sinh." if is_batch else None,
     )
     button_label = "TẠO ZIP HÀNG LOẠT" if is_batch else "TẠO FILE WORD"
-    generate = st.button(button_label, type="primary", use_container_width=True) or quick_generate
+    generate = st.button(button_label, type="primary", use_container_width=True) or quick_generate or studio_generate
 
     if generate:
         if not TEMPLATE_PATH.exists():
@@ -1799,6 +2050,8 @@ with tab_export:
                 slogan_align=slogan_align,
                 phone=phone,
                 email=email,
+                show_phone=st.session_state["studio_show_phone"],
+                show_email=st.session_state["studio_show_email"],
                 phone_symbol=phone_symbol,
                 email_symbol=email_symbol,
                 contact_font=contact_font,
@@ -1946,7 +2199,7 @@ with tab_export:
 
             st.session_state["_last_export_bytes"] = output.getvalue()
             st.session_state["_last_export_name"] = filename
-            if quick_generate:
+            if quick_generate or studio_generate:
                 st.rerun()  # Show download beside the editor in the same workflow.
             st.download_button(
                 "TẢI FILE WORD",

@@ -4,10 +4,11 @@ on:
   pull_request:
   push:
     branches:
-      - fix/preserve-original-lingualxplore-template
+      - main
+      - feat/visual-header-footer-continuous-table
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   docx-tests:
@@ -43,15 +44,3 @@ jobs:
           name: taowl-template-visual-qa
           path: qa_output/
           retention-days: 14
-      - name: Refresh screenshot of unchanged branded template
-        if: github.event_name == 'push' && github.ref == 'refs/heads/fix/preserve-original-lingualxplore-template'
-        run: |
-          mkdir -p assets
-          cp qa_output/5_1-page1.png assets/lingualxplore-template-preview.png
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/lingualxplore-template-preview.png
-          if ! git diff --cached --quiet; then
-            git commit -m "assets: refresh screenshot from original LingualXplore DOCX"
-            git push origin HEAD:fix/preserve-original-lingualxplore-template
-          fi
